@@ -154,3 +154,36 @@ def test_membership_csv_accepts_open_ended_current_constituent(tmp_path):
     membership = read_universe_membership_csv(path)
     assert membership.loc[0, "symbol"] == "ABC"
     assert pd.isna(membership.loc[0, "end_date"])
+
+
+
+def test_price_csv_rejects_duplicate_dates_and_negative_volume(tmp_path):
+    from trader.data import read_price_csv
+
+    duplicate = tmp_path / "DUP.csv"
+    duplicate.write_text(
+        "date,open,high,low,close,adj_close,volume,dividend\n"
+        "2024-01-02,100,100,100,100,100,1000,0\n"
+        "2024-01-02,101,101,101,101,101,1000,0\n"
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        read_price_csv(duplicate)
+
+    negative = tmp_path / "NEG.csv"
+    negative.write_text(
+        "date,open,high,low,close,adj_close,volume,dividend\n"
+        "2024-01-02,100,100,100,100,100,-1,0\n"
+    )
+    with pytest.raises(ValueError, match="cannot be negative"):
+        read_price_csv(negative)
+
+
+def test_fundamentals_reject_duplicate_point_in_time_snapshots():
+    from trader.strategies import fundamentals_as_of
+
+    duplicate = pd.DataFrame([
+        {"symbol": "ABC", "as_of_date": "2024-01-01", "payout_ratio": 0.4},
+        {"symbol": "ABC", "as_of_date": "2024-01-01", "payout_ratio": 0.5},
+    ])
+    with pytest.raises(ValueError, match="Duplicate point-in-time"):
+        fundamentals_as_of(duplicate, "2024-01-02")
