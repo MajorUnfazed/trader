@@ -123,6 +123,7 @@ def run_backtest(
             total = p.value(open_quotes, currencies, fx)
             position = p.positions.get(symbol)
             current_price = open_quotes[symbol]
+            volume = float(prices[symbol].loc[day, "volume"]) if "volume" in prices[symbol].columns else None
             current_value = (
                 position.quantity * current_price * p.fx(position.currency, fx)
                 if position else 0.0
@@ -132,7 +133,7 @@ def run_backtest(
                 qty = quantity_to_target(
                     position, current_price, p.fx(position.currency, fx), total, target
                 )
-                fill = p.sell(symbol, current_price, cfg.execution, day.date(), reason, quantity=qty, usd_inr=fx)
+                fill = p.sell(symbol, current_price, cfg.execution, day.date(), reason, quantity=qty, usd_inr=fx, volume=volume)
             elif target_value > current_value:
                 sector = str(metadata.loc[symbol].get("sector", "Unknown")) if symbol in metadata.index else (position.sector if position else "Unknown")
                 sector_value = sum(
@@ -141,10 +142,11 @@ def run_backtest(
                     for sym, pos in p.positions.items() if pos.sector == sector
                 )
                 budget = min(target_value - current_value, max(0.0, total * cfg.risk.max_sector_weight - sector_value))
-                fill = p.buy(symbol, current_price, currencies[symbol], sector, budget, cfg.execution, day.date(), reason, fx)
+                fill = p.buy(symbol, current_price, currencies[symbol], sector, budget, cfg.execution, day.date(), reason, fx, volume=volume)
             else:
                 fill = None
-            pending.pop(symbol, None)
+            if fill is not None:
+                pending.pop(symbol, None)
 
         # Re-evaluate strategy targets only on the configured rebalance cadence.
         if i % rebalance_days == 0:
