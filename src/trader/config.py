@@ -14,6 +14,7 @@ class ExecutionConfig:
     india_cost_bps: float = 15
     us_cost_bps: float = 10
     slippage_bps: float = 10
+    max_volume_participation: float = 0.01
     india_capital_gains_tax_rate: float = .10
     us_withholding_tax_rate: float = .25
     usd_inr: float = 83.0
@@ -26,6 +27,10 @@ class Config:
     risk: RiskConfig = field(default_factory=RiskConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     def __post_init__(self):
+        if not 0 < self.execution.max_volume_participation <= 1:
+            raise ValueError('max_volume_participation must be in (0, 1]')
+        if min(self.execution.india_cost_bps, self.execution.us_cost_bps, self.execution.slippage_bps) < 0:
+            raise ValueError('execution costs and slippage cannot be negative')
         total=sum(float(v) for v in self.allocations.values())
         if abs(total-1.0) > 1e-9: raise ValueError(f"allocations must sum to 1.0, got {total}")
         if self.allocations.get("cash_reserve",0) < self.risk.min_cash_weight: raise ValueError("cash_reserve must be at least min_cash_weight")
