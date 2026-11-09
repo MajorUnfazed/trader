@@ -55,3 +55,44 @@ def test_backtest_keeps_order_pending_until_volume_supports_execution():
     assert len(fills) == 1
     assert fills[0].date == days[-1].date()
     assert fills[0].quantity == 99  # 10 bps slippage and 15 bps costs affect sizing
+
+
+
+def test_halted_session_does_not_execute_or_mark_instrument():
+    days = pd.DatetimeIndex(["2024-01-02", "2024-01-03", "2024-01-04"])
+    price = pd.Series([100.0, 105.0, 110.0], index=days)
+    prices = {
+        "ABC": pd.DataFrame({
+            "open": price, "high": price, "low": price, "close": price,
+            "adj_close": price, "volume": [20_000, 0, 20_000],
+            "dividend": 0.0, "tradable": [True, False, True],
+        }, index=days)
+    }
+    fundamentals = pd.DataFrame([{
+        "symbol": "ABC", "as_of_date": "2024-01-01", "dividend_yield": 0.03,
+        "payout_ratio": 0.5, "fcf_positive": True, "debt_to_equity": 0.2,
+        "dividend_growth_5y": 0.1, "sector": "Test", "currency": "INR",
+    }])
+
+    result = run_backtest(
+        prices, fundamentals, Config(), str(days[0].date()), str(days[-1].date()),
+        rebalance_days=1, validate_calendars=False,
+    )
+    fills = [fill for fill in result.portfolio.fills if fill.symbol == "ABC" and fill.side == "BUY"]
+    assert len(fills) == 1
+    assert fills[0].date == days[-1].date()
+    # The halted session's synthetic close of 105 must not update the mark.
+    assert result.portfolio.last_prices["ABC"] == 110.0
+
+
+def test_price_csv_parses_explicit_tradability_flag(tmp_path):
+    from trader.data import read_price_csv
+
+    path = tmp_path / "HALT.csv"
+    path.write_text(
+        "date,open,high,low,close,adj_close,volume,dividend,tradable\\n"
+        "2024-01-02,100,100,100,100,100,0,0,false\\n"
+        "2024-01-03,101,101,101,101,101,1000,0,true\\n"
+    )
+    loaded = read_price_csv(path)
+    assert loaded["tradable"].tolist() == [False, True]
