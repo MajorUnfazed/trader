@@ -133,7 +133,7 @@ def run_backtest(
                     position, current_price, p.fx(position.currency, fx), total, target
                 )
                 fill = p.sell(symbol, current_price, cfg.execution, day.date(), reason, quantity=qty, usd_inr=fx)
-            elif target_value > current_value and position is not None or target_value > current_value:
+            elif target_value > current_value:
                 sector = str(metadata.loc[symbol].get("sector", "Unknown")) if symbol in metadata.index else (position.sector if position else "Unknown")
                 sector_value = sum(
                     pos.quantity * p.last_prices.get(sym, pos.avg_cost_native)
@@ -156,7 +156,7 @@ def run_backtest(
                     if held_symbol not in targets:
                         targets[held_symbol] = (0.0, "Strategy exit: no qualifying signal")
                 for symbol, (weight, reason) in targets.items():
-                    pending[symbol] = (weight, reason, day)
+                    pending.setdefault(symbol, (weight, reason, day))
 
         # Risk reductions are independent of strategy rebalances and never add exposure.
         p.value(close_quotes, currencies, fx)
