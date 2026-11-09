@@ -94,7 +94,7 @@ def run_backtest(
         close_quotes = {
             symbol: float(df.loc[day, "close"])
             for symbol, df in prices.items()
-            if day in df.index
+            if day in df.index and ("tradable" not in df or bool(df.loc[day, "tradable"]))
         }
         fx = fx_at(day)
 
@@ -114,7 +114,7 @@ def run_backtest(
         open_quotes = {
             symbol: float(df.loc[day, "open"])
             for symbol, df in prices.items()
-            if day in df.index
+            if day in df.index and ("tradable" not in df or bool(df.loc[day, "tradable"]))
         }
         for symbol in list(pending):
             target, reason, decision_day = pending[symbol]
