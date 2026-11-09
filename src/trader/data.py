@@ -9,10 +9,14 @@ def read_price_csv(path: str | Path, symbol: str | None = None) -> pd.DataFrame:
     df = pd.read_csv(path, parse_dates=["date"])
     missing = REQUIRED - set(df.columns)
     if missing: raise ValueError(f"{path}: missing columns {sorted(missing)}")
-    df = df.sort_values("date").drop_duplicates("date").set_index("date")
-    if df.index.has_duplicates or not df.index.is_monotonic_increasing: raise ValueError(f"{path}: dates must be unique and ordered")
-    if df[list(REQUIRED - {"date"})].isna().any().any(): raise ValueError(f"{path}: missing market values")
+    if df["date"].duplicated().any(): raise ValueError(f"{path}: duplicate market dates")
+    df = df.sort_values("date").set_index("date")
+    if not df.index.is_monotonic_increasing: raise ValueError(f"{path}: dates must be ordered")
+    numeric_columns = ["open", "high", "low", "close", "adj_close", "volume", "dividend"]
+    for column in numeric_columns: df[column] = pd.to_numeric(df[column], errors="coerce")
+    if df[numeric_columns].isna().any().any(): raise ValueError(f"{path}: missing or non-numeric market values")
     if (df[["open", "high", "low", "close", "adj_close"]] <= 0).any().any(): raise ValueError(f"{path}: prices must be positive")
+    if (df["volume"] < 0).any() or (df["dividend"] < 0).any(): raise ValueError(f"{path}: volume and dividend values cannot be negative")
     if (df["high"] < df[["open", "close", "low"]].max(axis=1)).any() or (df["low"] > df[["open", "close", "high"]].min(axis=1)).any(): raise ValueError(f"{path}: invalid OHLC range")
     if "split_factor" not in df: df["split_factor"] = 1.0
     if (df["split_factor"] <= 0).any(): raise ValueError(f"{path}: split_factor must be positive")
@@ -25,6 +29,8 @@ def read_price_csv(path: str | Path, symbol: str | None = None) -> pd.DataFrame:
         parsed = values.map(mapping)
         if parsed.isna().any(): raise ValueError(f"{path}: tradable must contain true/false values")
         df["tradable"] = parsed.astype(bool)
+        if ((~df["tradable"]) & (df["volume"] != 0)).any():
+            raise ValueError(f"{path}: non-tradable rows must have zero volume")
     df["symbol"] = symbol or Path(path).stem
     return df
 
@@ -54,7 +60,8 @@ def read_fx_csv(path: str | Path) -> pd.Series:
     """
     df = pd.read_csv(path, parse_dates=["date"])
     if set(("date", "usd_inr")) - set(df.columns): raise ValueError(f"{path}: expected date,usd_inr")
-    fx = df.sort_values("date").drop_duplicates("date").set_index("date")["usd_inr"].astype(float)
+    if df["date"].duplicated().any(): raise ValueError(f"{path}: duplicate FX dates")
+    fx = df.sort_values("date").set_index("date")["usd_inr"].astype(float)
     if fx.isna().any() or (fx <= 0).any(): raise ValueError(f"{path}: USD/INR rates must be positive")
     return fx
 
