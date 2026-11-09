@@ -191,7 +191,7 @@ def test_empty_signal_set_does_not_liquidate_paper_holdings():
         "dividend_growth_5y": 0.0, "sector": "Test", "currency": "INR", "exchange": "NSE",
     }])
     db = connect(":memory:")
-    p = Portfolio(0)
+    p = Portfolio(9_000)
     p.positions["ABC"] = Position("ABC", 10, 100, 100, "INR", "Test")
     save_portfolio(db, p, str((prices["ABC"].index[0] - pd.Timedelta(days=1)).date()))
     db.commit()
