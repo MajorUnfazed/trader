@@ -6,7 +6,7 @@ An explainable, long-horizon research and paper-trading foundation for Indian an
 
 - CSV-first historical data ingestion, validated OHLC data, exchange-calendar session checks, split factors, payment-dated dividend events, and an optional `yfinance` research adapter.
 - Three rules-based strategies: dividend quality, dividend growth, and long-term growth/momentum.
-- Event-driven daily backtest with next-session execution, split-aware holdings, last-known-price marks between exchange sessions, costs, slippage, cash reserve, position caps, INR accounting, historical USD/INR support, dividend withholding, and simplified taxable realised gains.
+- Event-driven daily backtest with next-session execution, split-aware holdings, last-known-price marks between exchange sessions, configurable costs/slippage, a conservative all-or-none daily-volume participation gate, cash reserve, position caps, INR accounting, historical USD/INR support, dividend withholding, and simplified taxable realised gains.
 - SQLite persistence for paper portfolios, positions, pending orders, fills, currency-denominated dividend receivables, decisions, processed sessions, and daily snapshots.
 - FastAPI read-only status API and Streamlit dashboard.
 - NIFTY 50 / S&P 500 benchmark comparison when their historical files are supplied.
@@ -70,6 +70,6 @@ The initial target sleeves are 30% dividend quality, 20% dividend growth, 30% gr
 
 `data` reads validated historical files; `strategies` produces explainable scores and sleeve targets; `backtest` uses completed-session signals and next-session open execution; `portfolio` models split-aware paper accounting; `paper` drives stateful forward simulation; `storage` persists the audit trail; `api`/`dashboard` display stored results. The provided universe is whatever files you supply—this does **not** eliminate survivorship bias. Supply historical membership, delistings, and point-in-time fundamentals to address it.
 
-## Tax / accounting caveat
+## Execution assumptions\n\nOrders are modelled at the next session open with configured basis-point costs and slippage. By default, an order is eligible only when its full share quantity is no more than 1% of that session's reported volume (`execution.max_volume_participation`); otherwise it remains pending for a later session. This is a conservative all-or-none liquidity gate, not a true order-book simulator: it does not model bid/ask depth, intraday volume curves, partial fills, price impact, limit-up/limit-down queues, or broker-specific fee schedules. The configured India/US cost basis points are estimates and must be calibrated against the intended broker and current exchange/tax schedules before interpreting results.\n\n## Tax / accounting caveat
 
 Tax settings are deliberately simplified configurable estimates, not tax advice. Indian STCG/LTCG treatment, US capital-gains treatment, Indian dividend taxation, treaty claims, ADR handling, fees, FX spreads, and reporting are not fully modelled and depend on residency, holding period, broker, and security. Obtain professional advice before any real-money use.
