@@ -72,7 +72,7 @@ The initial target sleeves are 30% dividend quality, 20% dividend growth, 30% gr
 
 ## Automated tests
 
-GitHub Actions runs `python -m pytest -q` on pushes and pull requests to `main`. The regression suite covers zero/partial sells, dividend entitlement and payment accounting, FX revaluation, persistence, exchange-session execution, and point-in-time fundamentals. A green test suite is necessary but not sufficient evidence of strategy profitability or production readiness.
+GitHub Actions runs `python -m pytest -q` on pushes and pull requests to `main`. The regression suite covers zero/partial sells, dividend entitlement and payment accounting, FX revaluation, persistence, exchange-session execution, market-halt handling, point-in-time fundamentals, and historical constituent membership. A green test suite is necessary but not sufficient evidence of strategy profitability or production readiness.
 
 ## Architecture
 
