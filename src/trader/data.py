@@ -74,12 +74,8 @@ def read_universe_membership_csv(path: str | Path) -> pd.DataFrame:
         raise ValueError(f"{path}: end_date cannot precede start_date")
     for symbol, group in df.sort_values(["symbol", "start_date"]).groupby("symbol"):
         previous_end = None
-        for row in group.itertuples():
-            if previous_end is None and row.Index != group.index[0]:
-                raise ValueError(f"{path}: overlapping membership intervals for {symbol}")
-            if previous_end is not None and row.start_date <= previous_end:
+        for index, row in enumerate(group.itertuples()):
+            if index > 0 and (pd.isna(previous_end) or row.start_date <= previous_end):
                 raise ValueError(f"{path}: overlapping membership intervals for {symbol}")
             previous_end = row.end_date
-            if pd.isna(previous_end) and row.Index != group.index[-1]:
-                raise ValueError(f"{path}: open-ended membership interval must be last for {symbol}")
     return df
