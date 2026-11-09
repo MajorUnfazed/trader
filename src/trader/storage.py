@@ -23,7 +23,9 @@ def connect(path="data/trader.db"):
     if "ex_date" not in dividend_columns:
         c.execute("ALTER TABLE dividend_receivables RENAME TO dividend_receivables_legacy")
         c.execute("CREATE TABLE dividend_receivables (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, ex_date TEXT NOT NULL, payment_date TEXT NOT NULL, net_inr REAL NOT NULL, gross_inr REAL NOT NULL, tax_inr REAL NOT NULL, status TEXT NOT NULL CHECK(status IN ('PENDING','PAID')), UNIQUE(symbol,ex_date,payment_date,gross_inr))")
-        c.execute("INSERT INTO dividend_receivables(symbol,ex_date,payment_date,net_inr,gross_inr,tax_inr,status) SELECT symbol,'',payment_date,net_inr,gross_inr,tax_inr,status FROM dividend_receivables_legacy")
+        # Legacy rows had no ex-date. Use payment_date as a migration marker;
+        # exact historical entitlement dates cannot be recovered from that schema.
+        c.execute("INSERT INTO dividend_receivables(symbol,ex_date,payment_date,net_inr,gross_inr,tax_inr,status) SELECT symbol,payment_date,payment_date,net_inr,gross_inr,tax_inr,status FROM dividend_receivables_legacy")
         c.execute("DROP TABLE dividend_receivables_legacy")
     receivable_columns={row[1] for row in c.execute("PRAGMA table_info(dividend_receivables)")}
     for name, declaration in (("currency", "TEXT NOT NULL DEFAULT 'INR'"), ("net_native", "REAL"), ("gross_native", "REAL"), ("tax_native", "REAL")):
