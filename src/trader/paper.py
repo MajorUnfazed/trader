@@ -42,18 +42,20 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
         # symbol's next actual exchange session.
         for oid,symbol,side,target,reason in connection.execute("SELECT id,symbol,side,target_weight,reason FROM orders WHERE status='PENDING'").fetchall():
             if symbol not in close: continue
-            op=float(prices[symbol].loc[day,"open"]); total=p.value(open_quotes,currencies,fx_at(day))
+            row=prices[symbol].loc[day]; op=float(row["open"]); volume=float(row["volume"]) if "volume" in row else None
+            total=p.value(open_quotes,currencies,fx_at(day))
             if side == 'SELL':
                 position=p.positions.get(symbol)
                 qty=quantity_to_target(position,op,p.fx(position.currency,fx_at(day)),total,target) if position and target is not None else None
-                fill=p.sell(symbol,op,cfg.execution,day.date(),reason,quantity=qty,usd_inr=fx_at(day))
+                fill=p.sell(symbol,op,cfg.execution,day.date(),reason,quantity=qty,usd_inr=fx_at(day),volume=volume)
             else:
                 current=p.positions.get(symbol); current_value=current.quantity*op*p.fx(currencies[symbol],fx_at(day)) if current else 0
                 sector=str(metadata.loc[symbol].get('sector','Unknown'))
                 sector_value=sum(pos.quantity*p.last_prices.get(sym,pos.avg_cost_native)*p.fx(currencies.get(sym,pos.currency),fx_at(day)) for sym,pos in p.positions.items() if pos.sector==sector)
                 budget=min(max(0,total*target-current_value),max(0,total*cfg.risk.max_sector_weight-sector_value))
-                fill=p.buy(symbol,op,currencies[symbol],sector,budget,cfg.execution,day.date(),reason,fx_at(day))
-            connection.execute("UPDATE orders SET status=?,filled_date=? WHERE id=?",('FILLED' if fill else 'CANCELLED',str(day.date()),oid))
+                fill=p.buy(symbol,op,currencies[symbol],sector,budget,cfg.execution,day.date(),reason,fx_at(day),volume=volume)
+            if fill:
+                connection.execute("UPDATE orders SET status='FILLED',filled_date=? WHERE id=?",(str(day.date()),oid))
             if fill: connection.execute("INSERT INTO fills(order_id,date,symbol,side,quantity,price_native,fee_inr,reason) VALUES(?,?,?,?,?,?,?,?)",(oid,str(fill.date),fill.symbol,fill.side,fill.quantity,fill.price_native,fill.fee_inr,fill.reason))
         if day == dates[-1]:
             available=fundamentals_as_of(fundamentals, day)
