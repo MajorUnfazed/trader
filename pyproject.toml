@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "longterm-trader"
+version = "0.1.0"
+description = "Paper-only, long-horizon equity research and trading system"
+requires-python = ">=3.11"
+dependencies = ["pandas>=2.1", "numpy>=1.26", "pydantic>=2.5", "PyYAML>=6.0", "pandas-market-calendars>=5.0"]
+
+[project.optional-dependencies]
+web = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "streamlit>=1.39", "plotly>=5.24"]
+research = ["yfinance>=0.2.54"]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

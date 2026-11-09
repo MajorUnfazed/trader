@@ -1,0 +1,19 @@
+base_currency: INR
+initial_capital_inr: 100000
+allocations:
+  dividend_quality: 0.30
+  dividend_growth: 0.20
+  long_term_growth: 0.30
+  cash_reserve: 0.20
+risk:
+  max_position_weight: 0.10
+  max_sector_weight: 0.30
+  min_cash_weight: 0.20
+  rebalance_threshold: 0.03
+execution:
+  india_cost_bps: 15
+  us_cost_bps: 10
+  slippage_bps: 10
+  india_capital_gains_tax_rate: 0.10
+  us_withholding_tax_rate: 0.25
+  usd_inr: 83.0
