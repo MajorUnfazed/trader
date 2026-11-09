@@ -209,7 +209,7 @@ def test_paper_order_waits_for_the_symbol_next_session():
         values = pd.Series([100.0] * len(days), index=days)
         return pd.DataFrame({
             "open": values, "high": values, "low": values, "close": values,
-            "adj_close": values, "volume": 1000, "dividend": 0.0,
+            "adj_close": values, "volume": 20_000, "dividend": 0.0,
         }, index=days)
 
     prices = {
