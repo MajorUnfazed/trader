@@ -15,13 +15,13 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
     p,last=load_portfolio(connection,cfg.initial_capital_inr)
     dates=[d for d in all_dates if d <= end and (last is None or str(d.date()) > last)]
     if not dates: return {"processed":0,"portfolio":p}
-    metadata=fundamentals.sort_values("as_of_date").groupby("symbol",as_index=True).tail(1).set_index("symbol")
     if usd_inr is not None:
         usd_inr=usd_inr.sort_index().reindex(pd.DatetimeIndex(dates),method="ffill")
         if usd_inr.isna().any(): raise ValueError("FX history must begin before paper sessions")
     def fx_at(d): return float(usd_inr.loc[d]) if usd_inr is not None else cfg.execution.usd_inr
     for day in dates:
-        currencies={s:str(metadata.loc[s].get("currency","INR")) if s in metadata.index else "INR" for s in prices}
+        metadata=fundamentals_as_of(fundamentals,day)
+        currencies={s:str(metadata.loc[s].get("currency",p.positions[s].currency if s in p.positions else "INR")) if s in metadata.index else (p.positions[s].currency if s in p.positions else "INR") for s in prices}
         close={s:float(x.loc[day,"close"]) for s,x in prices.items() if day in x.index}
         for s,x in prices.items():
             if day in x.index: p.apply_split(s,float(x.loc[day,"split_factor"]) if "split_factor" in x else 1)
@@ -60,8 +60,11 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
             signals=dividend_quality(available)+dividend_growth(available)+long_term_growth(prices,day)
             targets=target_weights(signals,cfg.allocations,cfg.risk.max_position_weight)
             drift=drift_targets(p,close,currencies,fx_at(day),cfg.risk)
-            for s in p.positions:
-                if s not in targets: connection.execute("INSERT INTO orders(created_date,symbol,side,target_weight,reason,status) VALUES(?,?, 'SELL',NULL,?,'PENDING')",(str(day.date()),s,"No longer selected"))
+            # An empty signal set means the strategy had no actionable view;
+            # preserve existing holdings rather than liquidating the whole book.
+            if signals:
+                for s in p.positions:
+                    if s not in targets: connection.execute("INSERT INTO orders(created_date,symbol,side,target_weight,reason,status) VALUES(?,?, 'SELL',0,?,'PENDING')",(str(day.date()),s,"Strategy exit: no qualifying signal"))
             for s,(weight,reason) in targets.items():
                 if s not in drift: connection.execute("INSERT INTO orders(created_date,symbol,side,target_weight,reason,status) VALUES(?,?, 'BUY',?,?,'PENDING')",(str(day.date()),s,weight,reason))
             for s,(weight,reason) in drift.items():
