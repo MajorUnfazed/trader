@@ -28,6 +28,11 @@ def valid_sessions(prices: dict[str,pd.DataFrame], metadata: pd.DataFrame, start
         expected=sessions(exchange,start,end)
         all_observed=pd.DatetimeIndex(df.index).normalize()
         observed=all_observed[(all_observed >= pd.Timestamp(start)) & (all_observed <= pd.Timestamp(end))]
+        if len(observed) == 0:
+            # The instrument may not yet be listed or may be outside the
+            # requested window. It contributes no sessions to this run.
+            result[symbol] = pd.DatetimeIndex([])
+            continue
         invalid=observed.difference(expected)
         if len(invalid): raise ValueError(f"{symbol}: data contains non-session dates for {exchange}: {invalid[:3].tolist()}")
         active=expected[(expected >= observed.min()) & (expected <= observed.max())]
