@@ -4,7 +4,7 @@ from trader.backtest import run_backtest
 from trader.portfolio import Portfolio
 from trader.config import ExecutionConfig
 from trader.strategies import Signal, target_weights
-from trader.storage import connect, persist_result, save_portfolio
+from trader.storage import connect, persist_result, save_portfolio, load_portfolio
 from trader.portfolio import Position
 from trader.paper import run_paper
 from trader.calendars import sessions
@@ -108,3 +108,93 @@ def test_fundamentals_are_latest_strictly_as_of_decision_date():
     f=pd.DataFrame([{"symbol":"A","as_of_date":"2022-01-01","payout_ratio":.4},{"symbol":"A","as_of_date":"2022-07-01","payout_ratio":.9},{"symbol":"B","as_of_date":"2022-07-01","payout_ratio":.2}])
     selected=fundamentals_as_of(f,"2022-06-01")
     assert list(selected.index) == ["A"] and selected.loc["A","payout_ratio"] == .4
+
+
+def test_zero_quantity_sell_is_a_noop_and_negative_quantity_is_rejected():
+    p = Portfolio(20_000)
+    cfg = ExecutionConfig(india_cost_bps=0, slippage_bps=0)
+    p.buy("IN", 100, "INR", "Test", 10_000, cfg, pd.Timestamp("2022-01-01").date(), "seed")
+    before_cash = p.cash_inr
+    before_quantity = p.positions["IN"].quantity
+    assert p.sell("IN", 100, cfg, pd.Timestamp("2022-01-02").date(), "zero", quantity=0) is None
+    assert p.cash_inr == before_cash
+    assert p.positions["IN"].quantity == before_quantity
+    with pytest.raises(ValueError, match="negative"):
+        p.sell("IN", 100, cfg, pd.Timestamp("2022-01-02").date(), "negative", quantity=-1)
+
+
+def test_pending_dividend_is_in_equity_and_revalues_at_payment_fx():
+    p = Portfolio(20_000)
+    cfg = ExecutionConfig(usd_inr=80, us_withholding_tax_rate=0.25, us_cost_bps=0, slippage_bps=0)
+    p.buy("US", 100, "USD", "Tech", 8_000, cfg, pd.Timestamp("2022-01-01").date(), "seed", 80)
+    event = p.declare_dividend("US", 1, pd.Timestamp("2022-01-02").date(), pd.Timestamp("2022-01-05").date(), cfg, 80)
+    before_payment = p.value({}, {"US": "USD"}, 90)
+    assert before_payment == 20_000 - 8_000 + 9_000 + 67.5
+    paid = p.pay_dividends(pd.Timestamp("2022-01-05").date(), 90)
+    assert len(paid) == 1
+    assert p.cash_inr == 12_067.5
+    assert p.value({}, {"US": "USD"}, 90) == before_payment
+    assert p.dividend_income_inr == 67.5
+
+
+def test_currency_receivable_survives_sqlite_round_trip():
+    p = Portfolio(10_000)
+    cfg = ExecutionConfig(usd_inr=80, us_withholding_tax_rate=0.25, us_cost_bps=0, slippage_bps=0)
+    p.positions["US"] = Position("US", 2, 100, 16_000, "USD", "Tech")
+    p.declare_dividend("US", 1, pd.Timestamp("2022-01-02").date(), pd.Timestamp("2022-01-10").date(), cfg, 80)
+    db = connect(":memory:")
+    save_portfolio(db, p, "2022-01-02")
+    db.commit()
+    restored, _ = load_portfolio(db, 10_000)
+    receivable = restored.dividend_receivables[0]
+    assert receivable.currency == "USD"
+    assert receivable.net_native == 1.5
+    assert restored.value({}, {"US": "USD"}, 90) == 10_000 + 2 * 100 * 90 + 1.5 * 90
+
+
+def test_backtest_keeps_orders_until_the_symbol_next_has_a_session():
+    day1 = pd.Timestamp("2024-01-02")
+    day2 = pd.Timestamp("2024-01-03")
+    day3 = pd.Timestamp("2024-01-04")
+
+    def prices_for(days):
+        values = pd.Series([100.0] * len(days), index=days)
+        return pd.DataFrame({
+            "open": values, "high": values, "low": values, "close": values,
+            "adj_close": values, "volume": 1000, "dividend": 0.0,
+        }, index=days)
+
+    prices = {
+        "A": prices_for(pd.DatetimeIndex([day1, day2])),
+        "B": prices_for(pd.DatetimeIndex([day1, day3])),
+    }
+    fundamentals = pd.DataFrame([
+        {"symbol": symbol, "as_of_date": "2024-01-01", "dividend_yield": .03,
+         "payout_ratio": .5, "fcf_positive": True, "debt_to_equity": .2,
+         "dividend_growth_5y": .1, "sector": "Test", "currency": "INR"}
+        for symbol in ("A", "B")
+    ])
+    result = run_backtest(prices, fundamentals, Config(), str(day1.date()), str(day3.date()),
+                          rebalance_days=1, validate_calendars=False)
+    fills_b = [fill for fill in result.portfolio.fills if fill.symbol == "B" and fill.side == "BUY"]
+    assert len(fills_b) == 1
+    assert fills_b[0].date == day3.date()
+
+
+def test_empty_signal_set_does_not_liquidate_paper_holdings():
+    prices = {"ABC": frame()}
+    prices["ABC"]["adj_close"] = 100.0
+    prices["ABC"]["close"] = 100.0
+    fundamentals = pd.DataFrame([{
+        "symbol": "ABC", "as_of_date": "2021-12-31", "dividend_yield": 0.0,
+        "payout_ratio": .5, "fcf_positive": False, "debt_to_equity": .2,
+        "dividend_growth_5y": 0.0, "sector": "Test", "currency": "INR", "exchange": "NSE",
+    }])
+    db = connect(":memory:")
+    p = Portfolio(0)
+    p.positions["ABC"] = Position("ABC", 10, 100, 100, "INR", "Test")
+    save_portfolio(db, p, str((prices["ABC"].index[0] - pd.Timedelta(days=1)).date()))
+    db.commit()
+    run_paper(prices, fundamentals, Config(), db)
+    sells = db.execute("SELECT count(*) FROM orders WHERE side='SELL'").fetchone()[0]
+    assert sells == 0
