@@ -25,7 +25,7 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
         close={s:float(x.loc[day,"close"]) for s,x in prices.items() if day in x.index}
         for s,x in prices.items():
             if day in x.index: p.apply_split(s,float(x.loc[day,"split_factor"]) if "split_factor" in x else 1)
-        paid=p.pay_dividends(day.date())
+        paid=p.pay_dividends(day.date(),fx_at(day))
         for event in paid: connection.execute("UPDATE dividend_receivables SET status='PAID' WHERE symbol=? AND ex_date=? AND payment_date=? AND net_inr=?",(event.symbol,str(event.ex_date),str(event.payment_date),event.net_inr))
         # Determine ex-date entitlement from shares held coming into the
         # session, before opening orders can buy or sell them.
@@ -34,7 +34,7 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
                 payment=x.loc[day,"dividend_payment_date"] if "dividend_payment_date" in x else day
                 payment=pd.Timestamp(payment).date() if pd.notna(payment) else day.date()
                 receivable=p.declare_dividend(s,float(x.loc[day,"dividend"]),day.date(),payment,cfg.execution,fx_at(day))
-                if receivable: connection.execute("INSERT OR IGNORE INTO dividend_receivables(symbol,ex_date,payment_date,net_inr,gross_inr,tax_inr,status) VALUES(?,?,?,?,?,?,'PENDING')",(receivable.symbol,str(receivable.ex_date),str(receivable.payment_date),receivable.net_inr,receivable.gross_inr,receivable.tax_inr))
+                if receivable: connection.execute("INSERT OR IGNORE INTO dividend_receivables(symbol,ex_date,payment_date,net_inr,gross_inr,tax_inr,status,currency,net_native,gross_native,tax_native) VALUES(?,?,?,?,?,?,'PENDING',?,?,?,?)",(receivable.symbol,str(receivable.ex_date),str(receivable.payment_date),receivable.net_inr,receivable.gross_inr,receivable.tax_inr,receivable.currency,receivable.net_native,receivable.gross_native,receivable.tax_native))
         paid_now=p.pay_dividends(day.date())
         for event in paid_now: connection.execute("UPDATE dividend_receivables SET status='PAID' WHERE symbol=? AND ex_date=? AND payment_date=? AND net_inr=?",(event.symbol,str(event.ex_date),str(event.payment_date),event.net_inr))
         # Orders were created after a prior close; execute once, only on the
