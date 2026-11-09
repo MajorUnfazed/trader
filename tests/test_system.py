@@ -22,7 +22,7 @@ def test_dividend_receivable_uses_payment_date_and_us_withholding():
     event=p.declare_dividend("US",1,pd.Timestamp("2022-01-02").date(),pd.Timestamp("2022-01-05").date(),cfg)
     assert event.gross_inr == 80 and event.tax_inr == 20 and event.net_inr == 60
     assert p.pay_dividends(pd.Timestamp("2022-01-04").date()) == []
-    p.pay_dividends(pd.Timestamp("2022-01-05").date())
+    p.pay_dividends(pd.Timestamp("2022-01-05").date(), 80)
     assert p.dividend_income_inr == 60
 
 def test_dividend_entitlement_survives_partial_sale_and_multiple_events():
