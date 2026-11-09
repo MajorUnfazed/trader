@@ -23,6 +23,7 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
         metadata=fundamentals_as_of(fundamentals,day)
         currencies={s:str(metadata.loc[s].get("currency",p.positions[s].currency if s in p.positions else "INR")) if s in metadata.index else (p.positions[s].currency if s in p.positions else "INR") for s in prices}
         close={s:float(x.loc[day,"close"]) for s,x in prices.items() if day in x.index}
+        open_quotes={s:float(x.loc[day,"open"]) for s,x in prices.items() if day in x.index}
         for s,x in prices.items():
             if day in x.index: p.apply_split(s,float(x.loc[day,"split_factor"]) if "split_factor" in x else 1)
         paid=p.pay_dividends(day.date(),fx_at(day))
@@ -41,7 +42,7 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
         # symbol's next actual exchange session.
         for oid,symbol,side,target,reason in connection.execute("SELECT id,symbol,side,target_weight,reason FROM orders WHERE status='PENDING'").fetchall():
             if symbol not in close: continue
-            op=float(prices[symbol].loc[day,"open"]); total=p.value({symbol:op},currencies,fx_at(day))
+            op=float(prices[symbol].loc[day,"open"]); total=p.value(open_quotes,currencies,fx_at(day))
             if side == 'SELL':
                 position=p.positions.get(symbol)
                 qty=quantity_to_target(position,op,p.fx(position.currency,fx_at(day)),total,target) if position and target is not None else None
@@ -55,21 +56,41 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
             connection.execute("UPDATE orders SET status=?,filled_date=? WHERE id=?",('FILLED' if fill else 'CANCELLED',str(day.date()),oid))
             if fill: connection.execute("INSERT INTO fills(order_id,date,symbol,side,quantity,price_native,fee_inr,reason) VALUES(?,?,?,?,?,?,?,?)",(oid,str(fill.date),fill.symbol,fill.side,fill.quantity,fill.price_native,fill.fee_inr,fill.reason))
         if day == dates[-1]:
-            connection.execute("UPDATE orders SET status='CANCELLED' WHERE status='PENDING'")
             available=fundamentals_as_of(fundamentals, day)
             signals=dividend_quality(available)+dividend_growth(available)+long_term_growth(prices,day)
             targets=target_weights(signals,cfg.allocations,cfg.risk.max_position_weight)
             drift=drift_targets(p,close,currencies,fx_at(day),cfg.risk)
-            # An empty signal set means the strategy had no actionable view;
-            # preserve existing holdings rather than liquidating the whole book.
-            if signals:
-                for s in p.positions:
-                    if s not in targets: connection.execute("INSERT INTO orders(created_date,symbol,side,target_weight,reason,status) VALUES(?,?, 'SELL',0,?,'PENDING')",(str(day.date()),s,"Strategy exit: no qualifying signal"))
-            for s,(weight,reason) in targets.items():
-                if s not in drift: connection.execute("INSERT INTO orders(created_date,symbol,side,target_weight,reason,status) VALUES(?,?, 'BUY',?,?,'PENDING')",(str(day.date()),s,weight,reason))
-            for s,(weight,reason) in drift.items():
-                if s in targets:
-                    connection.execute("INSERT INTO orders(created_date,symbol,side,target_weight,reason,status) VALUES(?,?, 'SELL',?,?,'PENDING')",(str(day.date()),s,weight,reason))
+
+            def queue_order(symbol, side, target_weight, reason):
+                # Replace only this symbol's stale pending intent. Orders for
+                # securities whose exchanges were closed remain pending.
+                connection.execute("UPDATE orders SET status='CANCELLED' WHERE symbol=? AND status='PENDING'",(symbol,))
+                connection.execute(
+                    "INSERT INTO orders(created_date,symbol,side,target_weight,reason,status) VALUES(?,?,?,?,?,'PENDING')",
+                    (str(day.date()),symbol,side,target_weight,reason)
+                )
+
+            # Do not execute an old BUY after the latest run has no actionable
+            # signal. Keep pending SELL/risk-reduction orders alive.
+            if not signals:
+                connection.execute("UPDATE orders SET status='CANCELLED' WHERE status='PENDING' AND side='BUY'")
+            else:
+                for symbol in list(p.positions):
+                    if symbol not in targets:
+                        queue_order(symbol,"SELL",0.0,"Strategy exit: no qualifying signal")
+
+            for symbol,(weight,reason) in targets.items():
+                if symbol in drift:
+                    reduced_weight,drift_reason=drift[symbol]
+                    queue_order(symbol,"SELL",reduced_weight,drift_reason)
+                else:
+                    queue_order(symbol,"BUY",weight,reason)
+
+            # Risk reductions also apply when there is no fresh strategy signal.
+            if not signals:
+                for symbol,(weight,reason) in drift.items():
+                    queue_order(symbol,"SELL",weight,reason)
+
             connection.executemany("INSERT INTO decisions(date,symbol,strategy,score,explanation) VALUES(?,?,?,?,?)",[(str(day.date()),x.symbol,x.strategy,x.score,x.explanation) for x in signals])
         value=p.value(close,currencies,fx_at(day)); insert_snapshot(connection,day.date(),p,value)
         connection.execute("INSERT INTO paper_sessions(date) VALUES(?)",(str(day.date()),))
