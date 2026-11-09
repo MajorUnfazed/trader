@@ -198,3 +198,34 @@ def test_empty_signal_set_does_not_liquidate_paper_holdings():
     run_paper(prices, fundamentals, Config(), db)
     sells = db.execute("SELECT count(*) FROM orders WHERE side='SELL'").fetchone()[0]
     assert sells == 0
+
+
+def test_paper_order_waits_for_the_symbol_next_session():
+    day1 = pd.Timestamp("2024-01-02")
+    day2 = pd.Timestamp("2024-01-03")
+    day3 = pd.Timestamp("2024-01-04")
+
+    def prices_for(days):
+        values = pd.Series([100.0] * len(days), index=days)
+        return pd.DataFrame({
+            "open": values, "high": values, "low": values, "close": values,
+            "adj_close": values, "volume": 1000, "dividend": 0.0,
+        }, index=days)
+
+    prices = {
+        "A": prices_for(pd.DatetimeIndex([day1, day2, day3])),
+        "B": prices_for(pd.DatetimeIndex([day1, day3])),
+    }
+    fundamentals = pd.DataFrame([{
+        "symbol": "B", "as_of_date": "2024-01-01", "dividend_yield": .03,
+        "payout_ratio": .5, "fcf_positive": True, "debt_to_equity": .2,
+        "dividend_growth_5y": .1, "sector": "Test", "currency": "INR",
+    }])
+    db = connect(":memory:")
+    first = run_paper(prices, fundamentals, Config(), db, as_of=day2, validate_calendars=False)
+    pending = db.execute("SELECT count(*) FROM orders WHERE symbol='B' AND side='BUY' AND status='PENDING'").fetchone()[0]
+    assert pending == 1
+    second = run_paper(prices, fundamentals, Config(), db, as_of=day3, validate_calendars=False)
+    fills = db.execute("SELECT count(*) FROM fills WHERE symbol='B' AND side='BUY'").fetchone()[0]
+    assert second["processed"] == 1
+    assert fills == 1
