@@ -67,6 +67,8 @@ def test_backtest_runs_without_lookahead_crash():
     prices={"ABC":frame()}; f=pd.DataFrame([{"symbol":"ABC","as_of_date":"2021-12-31","dividend_yield":.03,"payout_ratio":.5,"fcf_positive":True,"debt_to_equity":.2,"revenue_growth":.1,"earnings_growth":.1,"dividend_growth_5y":.1,"sector":"Test","currency":"INR"}])
     result=run_backtest(prices,f,Config(),"2022-01-03","2023-02-01")
     assert result.equity.iloc[-1] > 0 and "cagr" in result.metrics()
+    assert result.metrics()["universe_membership_used"] is False
+    assert "survivorship bias" in result.metrics()["data_warning"]
 
 def test_backtest_snapshots_persist_per_day_not_terminal_values():
     prices={"ABC":frame(dividend=1)}; prices["ABC"]["volume"] = 20_000; f=pd.DataFrame([{"symbol":"ABC","as_of_date":"2021-12-31","dividend_yield":.03,"payout_ratio":.5,"fcf_positive":True,"debt_to_equity":.2,"dividend_growth_5y":.1,"sector":"Test","currency":"INR"}])
