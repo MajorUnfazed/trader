@@ -19,6 +19,12 @@ def read_price_csv(path: str | Path, symbol: str | None = None) -> pd.DataFrame:
     # For a dividend row, `dividend_payment_date` is optional for backwards
     # compatibility. Production/backtest datasets should provide it.
     if "dividend_payment_date" in df: df["dividend_payment_date"] = pd.to_datetime(df["dividend_payment_date"], errors="coerce")
+    if "tradable" in df:
+        values = df["tradable"].astype(str).str.strip().str.lower()
+        mapping = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
+        parsed = values.map(mapping)
+        if parsed.isna().any(): raise ValueError(f"{path}: tradable must contain true/false values")
+        df["tradable"] = parsed.astype(bool)
     df["symbol"] = symbol or Path(path).stem
     return df
 
