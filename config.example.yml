@@ -14,6 +14,8 @@ execution:
   india_cost_bps: 15
   us_cost_bps: 10
   slippage_bps: 10
+  # All-or-none execution gate: an order must be <=1% of session volume.
+  max_volume_participation: 0.01
   india_capital_gains_tax_rate: 0.10
   us_withholding_tax_rate: 0.25
   usd_inr: 83.0
