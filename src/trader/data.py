@@ -57,3 +57,29 @@ def read_fx_csv(path: str | Path) -> pd.Series:
     fx = df.sort_values("date").drop_duplicates("date").set_index("date")["usd_inr"].astype(float)
     if fx.isna().any() or (fx <= 0).any(): raise ValueError(f"{path}: USD/INR rates must be positive")
     return fx
+
+def read_universe_membership_csv(path: str | Path) -> pd.DataFrame:
+    """Read point-in-time universe intervals (inclusive start_date/end_date)."""
+    df = pd.read_csv(path)
+    required = {"symbol", "start_date", "end_date"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"{path}: missing membership columns {sorted(missing)}")
+    df["symbol"] = df["symbol"].astype(str).str.strip()
+    df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce")
+    df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce")
+    if df["symbol"].eq("").any() or df["start_date"].isna().any():
+        raise ValueError(f"{path}: symbol and start_date are required")
+    if (df["end_date"].notna() & (df["end_date"] < df["start_date"])).any():
+        raise ValueError(f"{path}: end_date cannot precede start_date")
+    for symbol, group in df.sort_values(["symbol", "start_date"]).groupby("symbol"):
+        previous_end = None
+        for row in group.itertuples():
+            if previous_end is None and row.Index != group.index[0]:
+                raise ValueError(f"{path}: overlapping membership intervals for {symbol}")
+            if previous_end is not None and row.start_date <= previous_end:
+                raise ValueError(f"{path}: overlapping membership intervals for {symbol}")
+            previous_end = row.end_date
+            if pd.isna(previous_end) and row.Index != group.index[-1]:
+                raise ValueError(f"{path}: open-ended membership interval must be last for {symbol}")
+    return df
