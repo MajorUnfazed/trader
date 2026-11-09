@@ -96,3 +96,61 @@ def test_price_csv_parses_explicit_tradability_flag(tmp_path):
     )
     loaded = read_price_csv(path)
     assert loaded["tradable"].tolist() == [False, True]
+
+
+
+def test_backtest_uses_historical_membership_and_exits_removed_constituent():
+    days = pd.date_range("2024-01-02", periods=4, freq="B")
+    price = pd.Series([100.0] * len(days), index=days)
+    prices = {
+        "ABC": pd.DataFrame({
+            "open": price, "high": price, "low": price, "close": price,
+            "adj_close": price, "volume": 20_000, "dividend": 0.0,
+        }, index=days)
+    }
+    fundamentals = pd.DataFrame([{
+        "symbol": "ABC", "as_of_date": "2024-01-01", "dividend_yield": 0.03,
+        "payout_ratio": 0.5, "fcf_positive": True, "debt_to_equity": 0.2,
+        "dividend_growth_5y": 0.1, "sector": "Test", "currency": "INR",
+    }])
+    membership = pd.DataFrame([{
+        "symbol": "ABC", "start_date": days[0], "end_date": days[1],
+    }])
+
+    result = run_backtest(
+        prices, fundamentals, Config(), str(days[0].date()), str(days[-1].date()),
+        rebalance_days=1, validate_calendars=False, universe_membership=membership,
+    )
+    buys = [fill for fill in result.portfolio.fills if fill.symbol == "ABC" and fill.side == "BUY"]
+    sells = [fill for fill in result.portfolio.fills if fill.symbol == "ABC" and fill.side == "SELL"]
+    assert len(buys) == 1 and buys[0].date == days[1].date()
+    assert len(sells) == 1 and sells[0].date == days[3].date()
+    assert "ABC" not in result.portfolio.positions
+    assert result.metrics()["universe_membership_used"] is True
+    assert result.metrics()["data_warning"] is None
+
+
+def test_membership_csv_rejects_overlapping_intervals(tmp_path):
+    from trader.data import read_universe_membership_csv
+
+    path = tmp_path / "membership.csv"
+    path.write_text(
+        "symbol,start_date,end_date\n"
+        "ABC,2024-01-01,2024-06-30\n"
+        "ABC,2024-06-01,2024-12-31\n"
+    )
+    with pytest.raises(ValueError, match="overlapping"):
+        read_universe_membership_csv(path)
+
+
+def test_membership_csv_accepts_open_ended_current_constituent(tmp_path):
+    from trader.data import read_universe_membership_csv
+
+    path = tmp_path / "membership.csv"
+    path.write_text(
+        "symbol,start_date,end_date\n"
+        "ABC,2024-01-01,\n"
+    )
+    membership = read_universe_membership_csv(path)
+    assert membership.loc[0, "symbol"] == "ABC"
+    assert pd.isna(membership.loc[0, "end_date"])
