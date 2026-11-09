@@ -89,7 +89,7 @@ def run_backtest(
 
     for i, day in enumerate(dates):
         available = fundamentals_as_of(fundamentals, day)
-        active_symbols = set(prices) if universe_membership is None else universe_as_of(universe_membership, day)
+        active_symbols = set(prices) if universe_membership is None else (universe_as_of(universe_membership, day) & set(prices))
         inactive_held = set(p.positions) - active_symbols
         strategy_available = available.loc[available.index.intersection(active_symbols)]
         strategy_prices = {symbol: df for symbol, df in prices.items() if symbol in active_symbols}
