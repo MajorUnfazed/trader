@@ -35,7 +35,10 @@ def dividend_growth(fundamentals: pd.DataFrame) -> list[Signal]:
 def long_term_growth(prices: dict[str,pd.DataFrame], as_of: pd.Timestamp) -> list[Signal]:
     out=[]
     for symbol, df in prices.items():
-        h=df.loc[:as_of, "adj_close"].dropna()
+        history = df.loc[:as_of]
+        if "tradable" in history:
+            history = history[history["tradable"].astype(bool)]
+        h=history["adj_close"].dropna()
         if len(h) < 252: continue
         last,ma50,ma200=h.iloc[-1],h.iloc[-50:].mean(),h.iloc[-200:].mean()
         mom=h.iloc[-1]/h.iloc[-126]-1
