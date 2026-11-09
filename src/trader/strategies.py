@@ -58,3 +58,12 @@ def target_weights(signals: list[Signal], allocations: dict, max_position_weight
             previous, explanation=targets.get(sig.symbol,(0.0,""))
             targets[sig.symbol]=(min(max_position_weight,previous+sleeve/slots), "; ".join(x for x in (explanation,sig.explanation) if x))
     return targets
+
+def universe_as_of(membership: pd.DataFrame, decision_date) -> set[str]:
+    """Return constituents whose inclusive membership interval contains a date."""
+    day = pd.Timestamp(decision_date)
+    active = membership[
+        (membership["start_date"] <= day)
+        & (membership["end_date"].isna() | (membership["end_date"] >= day))
+    ]
+    return set(active["symbol"].astype(str))
