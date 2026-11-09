@@ -22,8 +22,8 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
     for day in dates:
         metadata=fundamentals_as_of(fundamentals,day)
         currencies={s:str(metadata.loc[s].get("currency",p.positions[s].currency if s in p.positions else "INR")) if s in metadata.index else (p.positions[s].currency if s in p.positions else "INR") for s in prices}
-        close={s:float(x.loc[day,"close"]) for s,x in prices.items() if day in x.index}
-        open_quotes={s:float(x.loc[day,"open"]) for s,x in prices.items() if day in x.index}
+        close={s:float(x.loc[day,"close"]) for s,x in prices.items() if day in x.index and ("tradable" not in x or bool(x.loc[day,"tradable"]))}
+        open_quotes={s:float(x.loc[day,"open"]) for s,x in prices.items() if day in x.index and ("tradable" not in x or bool(x.loc[day,"tradable"]))}
         for s,x in prices.items():
             if day in x.index: p.apply_split(s,float(x.loc[day,"split_factor"]) if "split_factor" in x else 1)
         paid=p.pay_dividends(day.date(),fx_at(day))
