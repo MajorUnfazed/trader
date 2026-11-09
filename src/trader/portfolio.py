@@ -76,11 +76,17 @@ class Portfolio:
         )
         return self.cash_inr + holdings + receivables
 
-    def buy(self, symbol, price, currency, sector, budget_inr, cfg, when, reason, usd_inr=None) -> Fill | None:
+    def buy(self, symbol, price, currency, sector, budget_inr, cfg, when, reason, usd_inr=None, volume=None) -> Fill | None:
         fx = self.fx(currency, usd_inr or cfg.usd_inr)
         px = price * (1 + cfg.slippage_bps / 10000)
         cost_rate = (cfg.us_cost_bps if currency.upper() == "USD" else cfg.india_cost_bps) / 10000
         qty = math.floor(budget_inr / (px * fx * (1 + cost_rate)))
+        if volume is not None:
+            # All-or-none liquidity gate: never assume a fill larger than the
+            # configured fraction of that session's reported volume.
+            max_qty = math.floor(max(0.0, float(volume)) * cfg.max_volume_participation)
+            if max_qty < 1 or qty > max_qty:
+                return None
         if qty < 1:
             return None
         gross = qty * px * fx
@@ -99,7 +105,7 @@ class Portfolio:
         self.fills.append(fill)
         return fill
 
-    def sell(self, symbol, price, cfg, when, reason, quantity=None, usd_inr=None) -> Fill | None:
+    def sell(self, symbol, price, cfg, when, reason, quantity=None, usd_inr=None, volume=None) -> Fill | None:
         p = self.positions.get(symbol)
         if not p:
             return None
@@ -108,6 +114,10 @@ class Portfolio:
         qty = p.quantity if quantity is None else min(int(quantity), p.quantity)
         if qty == 0:
             return None
+        if volume is not None:
+            max_qty = math.floor(max(0.0, float(volume)) * cfg.max_volume_participation)
+            if max_qty < 1 or qty > max_qty:
+                return None
         fx = self.fx(p.currency, usd_inr or cfg.usd_inr)
         px = price * (1 - cfg.slippage_bps / 10000)
         rate = (cfg.us_cost_bps if p.currency.upper() == "USD" else cfg.india_cost_bps) / 10000
