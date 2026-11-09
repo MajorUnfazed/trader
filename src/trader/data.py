@@ -9,6 +9,7 @@ def read_price_csv(path: str | Path, symbol: str | None = None) -> pd.DataFrame:
     df = pd.read_csv(path, parse_dates=["date"])
     missing = REQUIRED - set(df.columns)
     if missing: raise ValueError(f"{path}: missing columns {sorted(missing)}")
+    if df["date"].isna().any(): raise ValueError(f"{path}: invalid market dates")
     if df["date"].duplicated().any(): raise ValueError(f"{path}: duplicate market dates")
     df = df.sort_values("date").set_index("date")
     if not df.index.is_monotonic_increasing: raise ValueError(f"{path}: dates must be ordered")
@@ -19,7 +20,8 @@ def read_price_csv(path: str | Path, symbol: str | None = None) -> pd.DataFrame:
     if (df["volume"] < 0).any() or (df["dividend"] < 0).any(): raise ValueError(f"{path}: volume and dividend values cannot be negative")
     if (df["high"] < df[["open", "close", "low"]].max(axis=1)).any() or (df["low"] > df[["open", "close", "high"]].min(axis=1)).any(): raise ValueError(f"{path}: invalid OHLC range")
     if "split_factor" not in df: df["split_factor"] = 1.0
-    if (df["split_factor"] <= 0).any(): raise ValueError(f"{path}: split_factor must be positive")
+    df["split_factor"] = pd.to_numeric(df["split_factor"], errors="coerce")
+    if df["split_factor"].isna().any() or (df["split_factor"] <= 0).any(): raise ValueError(f"{path}: split_factor must be positive")
     # For a dividend row, `dividend_payment_date` is optional for backwards
     # compatibility. Production/backtest datasets should provide it.
     if "dividend_payment_date" in df: df["dividend_payment_date"] = pd.to_datetime(df["dividend_payment_date"], errors="coerce")
@@ -60,6 +62,7 @@ def read_fx_csv(path: str | Path) -> pd.Series:
     """
     df = pd.read_csv(path, parse_dates=["date"])
     if set(("date", "usd_inr")) - set(df.columns): raise ValueError(f"{path}: expected date,usd_inr")
+    if df["date"].isna().any(): raise ValueError(f"{path}: invalid FX dates")
     if df["date"].duplicated().any(): raise ValueError(f"{path}: duplicate FX dates")
     fx = df.sort_values("date").set_index("date")["usd_inr"].astype(float)
     if fx.isna().any() or (fx <= 0).any(): raise ValueError(f"{path}: USD/INR rates must be positive")
