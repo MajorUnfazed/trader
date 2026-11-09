@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from .config import Config
 from .portfolio import Portfolio
-from .strategies import dividend_quality, dividend_growth, long_term_growth, Signal, target_weights, fundamentals_as_of
+from .strategies import dividend_quality, dividend_growth, long_term_growth, Signal, target_weights, fundamentals_as_of, universe_as_of
 from .calendars import valid_sessions
 from .risk import drift_targets, quantity_to_target
 
@@ -14,6 +14,7 @@ class BacktestResult:
     portfolio: Portfolio
     decisions: list[Signal]
     snapshots: list[tuple]
+    universe_membership_used: bool = False
 
     def metrics(self) -> dict:
         r = self.equity.pct_change().dropna()
@@ -29,6 +30,8 @@ class BacktestResult:
             "sharpe": (r.mean() / r.std() * np.sqrt(252)) if r.std() else 0,
             "dividend_income_inr": self.portfolio.dividend_income_inr,
             "ending_value_inr": self.equity.iloc[-1],
+            "universe_membership_used": self.universe_membership_used,
+            "data_warning": None if self.universe_membership_used else "No historical universe membership supplied; results may contain survivorship bias.",
         }
 
 
@@ -58,6 +61,7 @@ def run_backtest(
     rebalance_days=21,
     usd_inr: pd.Series | None = None,
     validate_calendars=True,
+    universe_membership: pd.DataFrame | None = None,
 ) -> BacktestResult:
     if rebalance_days < 1:
         raise ValueError("rebalance_days must be at least 1")
@@ -85,6 +89,10 @@ def run_backtest(
 
     for i, day in enumerate(dates):
         available = fundamentals_as_of(fundamentals, day)
+        active_symbols = set(prices) if universe_membership is None else universe_as_of(universe_membership, day)
+        inactive_held = set(p.positions) - active_symbols
+        strategy_available = available.loc[available.index.intersection(active_symbols)]
+        strategy_prices = {symbol: df for symbol, df in prices.items() if symbol in active_symbols}
         metadata = available
         currencies = {
             symbol: str(metadata.loc[symbol].get("currency", p.positions.get(symbol).currency if symbol in p.positions else "INR"))
@@ -116,6 +124,9 @@ def run_backtest(
             for symbol, df in prices.items()
             if day in df.index and ("tradable" not in df or bool(df.loc[day, "tradable"]))
         }
+        for symbol in list(pending):
+            if symbol not in active_symbols and pending[symbol][0] > 0:
+                pending.pop(symbol, None)
         for symbol in list(pending):
             target, reason, decision_day = pending[symbol]
             if day <= decision_day or symbol not in open_quotes:
@@ -150,13 +161,14 @@ def run_backtest(
 
         # Re-evaluate strategy targets only on the configured rebalance cadence.
         if i % rebalance_days == 0:
-            signals = dividend_quality(available) + dividend_growth(available) + long_term_growth(prices, day)
+            signals = dividend_quality(strategy_available) + dividend_growth(strategy_available) + long_term_growth(strategy_prices, day)
             decisions.extend(signals)
-            if signals:
+            if signals or inactive_held:
                 targets = target_weights(signals, cfg.allocations, cfg.risk.max_position_weight)
                 for held_symbol in p.positions:
                     if held_symbol not in targets:
-                        targets[held_symbol] = (0.0, "Strategy exit: no qualifying signal")
+                        reason = "Removed from historical universe" if held_symbol not in active_symbols else "Strategy exit: no qualifying signal"
+                        targets[held_symbol] = (0.0, reason)
                 for symbol, (weight, reason) in targets.items():
                     # Refresh the desired target while preserving the original
                     # decision timestamp so a closed exchange does not defer
@@ -178,4 +190,4 @@ def run_backtest(
         equity.append((day, value))
         snapshots.append((day.date(), value, p.cash_inr, p.realised_pnl_inr, p.dividend_income_inr))
 
-    return BacktestResult(pd.Series(dict(equity)).sort_index(), p, decisions, snapshots)
+    return BacktestResult(pd.Series(dict(equity)).sort_index(), p, decisions, snapshots, universe_membership is not None)
