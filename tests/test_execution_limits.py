@@ -90,9 +90,9 @@ def test_price_csv_parses_explicit_tradability_flag(tmp_path):
 
     path = tmp_path / "HALT.csv"
     path.write_text(
-        "date,open,high,low,close,adj_close,volume,dividend,tradable\\n"
-        "2024-01-02,100,100,100,100,100,0,0,false\\n"
-        "2024-01-03,101,101,101,101,101,1000,0,true\\n"
+        "date,open,high,low,close,adj_close,volume,dividend,tradable\n"
+        "2024-01-02,100,100,100,100,100,0,0,false\n"
+        "2024-01-03,101,101,101,101,101,1000,0,true\n"
     )
     loaded = read_price_csv(path)
     assert loaded["tradable"].tolist() == [False, True]
