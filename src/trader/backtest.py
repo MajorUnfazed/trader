@@ -156,7 +156,13 @@ def run_backtest(
                     if held_symbol not in targets:
                         targets[held_symbol] = (0.0, "Strategy exit: no qualifying signal")
                 for symbol, (weight, reason) in targets.items():
-                    pending.setdefault(symbol, (weight, reason, day))
+                    # Refresh the desired target while preserving the original
+                    # decision timestamp so a closed exchange does not defer
+                    # the same order indefinitely.
+                    if symbol in pending:
+                        pending[symbol] = (weight, reason, pending[symbol][2])
+                    else:
+                        pending[symbol] = (weight, reason, day)
 
         # Risk reductions are independent of strategy rebalances and never add exposure.
         p.value(close_quotes, currencies, fx)
