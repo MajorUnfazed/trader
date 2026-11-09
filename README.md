@@ -7,7 +7,7 @@ An explainable, long-horizon research and paper-trading foundation for Indian an
 - CSV-first historical data ingestion, validated OHLC data, exchange-calendar session checks, split factors, payment-dated dividend events, and an optional `yfinance` research adapter.
 - Three rules-based strategies: dividend quality, dividend growth, and long-term growth/momentum.
 - Event-driven daily backtest with next-session execution, split-aware holdings, last-known-price marks between exchange sessions, costs, slippage, cash reserve, position caps, INR accounting, historical USD/INR support, dividend withholding, and simplified taxable realised gains.
-- SQLite persistence for paper portfolios, positions, pending orders, fills, dividend receivables, decisions, processed sessions, and daily snapshots.
+- SQLite persistence for paper portfolios, positions, pending orders, fills, currency-denominated dividend receivables, decisions, processed sessions, and daily snapshots.
 - FastAPI read-only status API and Streamlit dashboard.
 - NIFTY 50 / S&P 500 benchmark comparison when their historical files are supplied.
 
@@ -64,9 +64,9 @@ uvicorn trader.api:app --reload
 streamlit run src/trader/dashboard.py
 ```
 
-The initial target sleeves are 30% dividend quality, 20% dividend growth, 30% growth, and 20% cash. Each sleeve is independently ranked, then capped by the configured per-position limit; overlapping signals cannot exceed that cap and any unusable sleeve budget remains cash. Purchases are capped by per-position and sector limits. The paper engine creates a controlled next-session reduction order when a position or sector breaches a limit by more than the rebalance threshold.
+The initial target sleeves are 30% dividend quality, 20% dividend growth, 30% growth, and 20% cash. Each sleeve is independently ranked, then capped by the configured per-position limit; overlapping signals cannot exceed that cap and any unusable sleeve budget remains cash. Purchases are capped by per-position and sector limits. The paper engine creates a controlled next-session reduction order when a position or sector breaches a limit by more than the rebalance threshold. Pending dividend receivables are included in portfolio equity; foreign-currency receivables are revalued using the supplied daily FX rate and converted to INR when paid. An empty signal set does not liquidate the paper portfolio.
 
-## Architecture
+## Automated tests\n\nGitHub Actions runs `python -m pytest -q` on pushes and pull requests to `main`. The regression suite covers zero/partial sells, dividend entitlement and payment accounting, FX revaluation, persistence, exchange-session execution, and point-in-time fundamentals. A green test suite is necessary but not sufficient evidence of strategy profitability or production readiness.\n\n## Architecture
 
 `data` reads validated historical files; `strategies` produces explainable scores and sleeve targets; `backtest` uses completed-session signals and next-session open execution; `portfolio` models split-aware paper accounting; `paper` drives stateful forward simulation; `storage` persists the audit trail; `api`/`dashboard` display stored results. The provided universe is whatever files you supply—this does **not** eliminate survivorship bias. Supply historical membership, delistings, and point-in-time fundamentals to address it.
 
