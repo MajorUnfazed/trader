@@ -65,11 +65,15 @@ def read_universe_membership_csv(path: str | Path) -> pd.DataFrame:
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"{path}: missing membership columns {sorted(missing)}")
-    df["symbol"] = df["symbol"].astype(str).str.strip()
-    df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce")
-    df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce")
-    if df["symbol"].eq("").any() or df["start_date"].isna().any():
+    if df["symbol"].isna().any() or df["start_date"].isna().any():
         raise ValueError(f"{path}: symbol and start_date are required")
+    df["symbol"] = df["symbol"].astype(str).str.strip()
+    raw_end = df["end_date"]
+    df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce")
+    df["end_date"] = pd.to_datetime(raw_end, errors="coerce")
+    invalid_end = raw_end.notna() & raw_end.astype(str).str.strip().ne("") & df["end_date"].isna()
+    if df["symbol"].eq("").any() or df["start_date"].isna().any() or invalid_end.any():
+        raise ValueError(f"{path}: invalid symbol or membership dates")
     if (df["end_date"].notna() & (df["end_date"] < df["start_date"])).any():
         raise ValueError(f"{path}: end_date cannot precede start_date")
     for symbol, group in df.sort_values(["symbol", "start_date"]).groupby("symbol"):
