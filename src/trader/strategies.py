@@ -9,7 +9,11 @@ def fundamentals_as_of(fundamentals: pd.DataFrame, decision_date) -> pd.DataFram
     """One latest publicly available fundamental snapshot per symbol."""
     required={"symbol","as_of_date"}
     if missing:=required-set(fundamentals.columns): raise ValueError(f"Missing fundamentals columns: {sorted(missing)}")
-    f=fundamentals.copy(); f["as_of_date"]=pd.to_datetime(f["as_of_date"])
+    f=fundamentals.copy(); f["as_of_date"]=pd.to_datetime(f["as_of_date"], errors="coerce")
+    if f["as_of_date"].isna().any() or f["symbol"].isna().any():
+        raise ValueError("Fundamentals require valid symbol and as_of_date values")
+    if f.duplicated(["symbol", "as_of_date"]).any():
+        raise ValueError("Duplicate point-in-time fundamentals snapshots for a symbol/date")
     f=f[f["as_of_date"] <= pd.Timestamp(decision_date)].sort_values(["symbol","as_of_date"])
     return f.groupby("symbol",as_index=True).tail(1).set_index("symbol")
 
