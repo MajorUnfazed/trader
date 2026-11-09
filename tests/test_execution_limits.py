@@ -54,4 +54,4 @@ def test_backtest_keeps_order_pending_until_volume_supports_execution():
     fills = [fill for fill in result.portfolio.fills if fill.symbol == "ABC" and fill.side == "BUY"]
     assert len(fills) == 1
     assert fills[0].date == days[-1].date()
-    assert fills[0].quantity == 100
+    assert fills[0].quantity == 99  # 10 bps slippage and 15 bps costs affect sizing
