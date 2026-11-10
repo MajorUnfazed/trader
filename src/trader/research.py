@@ -20,6 +20,7 @@ def walk_forward_backtest(
     usd_inr: pd.Series | None = None,
     universe_membership: pd.DataFrame | None = None,
     validate_calendars: bool = True,
+    strategy_filter: str | None = None,
 ) -> dict:
     """Run sequential out-of-sample test windows using calendar-day windows.
 
@@ -46,6 +47,7 @@ def walk_forward_backtest(
             rebalance_days=rebalance_days, usd_inr=usd_inr,
             validate_calendars=validate_calendars,
             universe_membership=universe_membership,
+            strategy_filter=strategy_filter,
         )
         folds.append({
             "train_start": str((cursor - pd.Timedelta(days=train_days)).date()),
@@ -65,6 +67,7 @@ def walk_forward_backtest(
         summary[f"median_{name}"] = float(values.median())
     summary["fold_count"] = len(folds)
     summary["method"] = "rolling_out_of_sample_fixed_rules"
+    summary["strategy"] = strategy_filter or "all"
     summary["warning"] = (
         "Strategies are fixed rules; the training window is not used to fit parameters. "
         "Inspect every fold, avoid selecting only the best period, and compare against matched total-return benchmarks."

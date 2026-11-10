@@ -36,6 +36,7 @@ def main():
         q.add_argument("--fx-file")
         if cmd in ("backtest", "walk-forward"):
             q.add_argument("--universe-membership")
+            q.add_argument("--strategy", choices=("all", "dividend_quality", "dividend_growth", "long_term_growth"), default="all")
         if cmd == "walk-forward":
             q.add_argument("--train-days", type=int, default=756)
             q.add_argument("--test-days", type=int, default=252)
@@ -69,11 +70,13 @@ def main():
             prices, f, cfg, first, last,
             train_days=a.train_days, test_days=a.test_days, step_days=a.step_days,
             usd_inr=fx, universe_membership=membership,
+            strategy_filter=None if a.strategy == "all" else a.strategy,
         )
         print(json.dumps(report, indent=2))
         return
 
-    result = run_backtest(prices, f, cfg, first, last, usd_inr=fx, universe_membership=membership)
+    result = run_backtest(prices, f, cfg, first, last, usd_inr=fx, universe_membership=membership,
+                          strategy_filter=None if a.strategy == "all" else a.strategy)
     persist_result(result, connect(a.database))
     report = result.metrics()
     report["benchmarks"] = {

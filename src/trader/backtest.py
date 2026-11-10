@@ -16,6 +16,7 @@ class BacktestResult:
     decisions: list[Signal]
     snapshots: list[tuple]
     universe_membership_used: bool = False
+    strategy_filter: str | None = None
 
     def metrics(self) -> dict:
         if len(self.equity) < 2:
@@ -47,6 +48,7 @@ class BacktestResult:
             "dividend_income_inr": float(self.portfolio.dividend_income_inr),
             "ending_value_inr": float(self.equity.iloc[-1]),
             "universe_membership_used": self.universe_membership_used,
+            "strategy": self.strategy_filter or "all",
             "data_warning": None if self.universe_membership_used else "No historical universe membership supplied; results may contain survivorship bias.",
         }
 
@@ -97,7 +99,14 @@ def run_backtest(
     usd_inr: pd.Series | None = None,
     validate_calendars=True,
     universe_membership: pd.DataFrame | None = None,
+    strategy_filter: str | None = None,
 ) -> BacktestResult:
+    allowed_strategies = {"dividend_quality", "dividend_growth", "long_term_growth"}
+    if strategy_filter is not None and strategy_filter not in allowed_strategies:
+        raise ValueError(f"strategy_filter must be one of {sorted(allowed_strategies)}")
+    if strategy_filter is not None:
+        investable = 1.0 - float(cfg.allocations.get("cash_reserve", 0.20))
+        cfg = replace(cfg, allocations={**{name: (investable if name == strategy_filter else 0.0) for name in allowed_strategies}, "cash_reserve": float(cfg.allocations.get("cash_reserve", 0.20))})
     if rebalance_days < 1:
         raise ValueError("rebalance_days must be at least 1")
     calendar_days = valid_sessions(prices, fundamentals, start, end) if validate_calendars else {}
@@ -199,7 +208,13 @@ def run_backtest(
                 pending.pop(symbol, None)
 
         if i % rebalance_days == 0:
-            signals = dividend_quality(strategy_available) + dividend_growth(strategy_available) + long_term_growth(strategy_prices, day)
+            signals = []
+            if strategy_filter in (None, "dividend_quality"):
+                signals += dividend_quality(strategy_available)
+            if strategy_filter in (None, "dividend_growth"):
+                signals += dividend_growth(strategy_available)
+            if strategy_filter in (None, "long_term_growth"):
+                signals += long_term_growth(strategy_prices, day)
             decisions.extend(signals)
             if signals or inactive_held:
                 targets = target_weights(signals, cfg.allocations, cfg.risk.max_position_weight)
@@ -223,4 +238,4 @@ def run_backtest(
         equity.append((day, value))
         snapshots.append((day.date(), value, p.cash_inr, p.realised_pnl_inr, p.dividend_income_inr))
 
-    return BacktestResult(pd.Series(dict(equity)).sort_index(), p, decisions, snapshots, universe_membership is not None)
+    return BacktestResult(pd.Series(dict(equity)).sort_index(), p, decisions, snapshots, universe_membership is not None, strategy_filter)
