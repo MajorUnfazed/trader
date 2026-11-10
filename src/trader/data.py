@@ -1,5 +1,7 @@
 from pathlib import Path
+import json
 import pandas as pd
+from .providers import normalize_fundamentals
 
 # `close` is the tradable, unadjusted close. `adj_close` is vendor-adjusted.
 REQUIRED = {"date", "open", "high", "low", "close", "adj_close", "volume", "dividend"}
@@ -56,6 +58,12 @@ def read_price_csv(path: str | Path, symbol: str | None = None) -> pd.DataFrame:
         if ((~df["tradable"]) & (df["volume"] != 0)).any():
             raise ValueError(f"{path}: non-tradable rows must have zero volume")
     df["symbol"] = symbol or Path(path).stem
+    metadata_path = Path(path).with_suffix(Path(path).suffix + ".metadata.json")
+    if metadata_path.exists():
+        try:
+            df.attrs["provenance"] = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{metadata_path}: invalid provenance metadata") from exc
     return df
 
 
@@ -147,3 +155,8 @@ def read_universe_membership_csv(path: str | Path) -> pd.DataFrame:
                 raise ValueError(f"{path}: overlapping membership intervals for {symbol}")
             previous_end = row.end_date
     return df
+
+
+def read_fundamentals_csv(path: str | Path) -> pd.DataFrame:
+    """Read fundamentals with an explicit, publication-time-aware schema."""
+    return normalize_fundamentals(pd.read_csv(path))

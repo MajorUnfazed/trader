@@ -4,7 +4,8 @@ from pathlib import Path
 import pandas as pd
 
 from .config import load_config
-from .data import load_directory, download_yfinance, read_fx_csv, read_universe_membership_csv
+from .data import load_directory, download_yfinance, read_fx_csv, read_universe_membership_csv, read_fundamentals_csv
+from .providers import Provenance, import_price_csv, provider_from_config, write_dataset
 from .backtest import run_backtest, benchmark_metrics
 from .research import walk_forward_backtest
 from .storage import connect, persist_result
@@ -13,7 +14,7 @@ from .audit import audit_data
 
 
 def fundamentals(path):
-    return pd.read_csv(path, parse_dates=["as_of_date"])
+    return read_fundamentals_csv(path)
 
 
 def main():
@@ -24,6 +25,22 @@ def main():
     dl.add_argument("--start", required=True)
     dl.add_argument("--end", required=True)
     dl.add_argument("--output-dir", default="data/raw")
+
+    imp = sub.add_parser("import-prices")
+    imp.add_argument("--input", required=True)
+    imp.add_argument("--output", required=True)
+    imp.add_argument("--provider", required=True)
+    imp.add_argument("--symbol")
+    imp.add_argument("--source-url")
+    imp.add_argument("--license-note")
+    imp.add_argument("--adjustment-basis", default="provider_supplied")
+
+    fetch = sub.add_parser("fetch-prices")
+    fetch.add_argument("--provider", choices=("tiingo", "eodhd"), required=True)
+    fetch.add_argument("--symbol", required=True)
+    fetch.add_argument("--start", required=True)
+    fetch.add_argument("--end", required=True)
+    fetch.add_argument("--output", required=True)
 
     for cmd in ("backtest", "paper-run", "walk-forward", "audit-data"):
         q = sub.add_parser(cmd)
@@ -47,6 +64,19 @@ def main():
     a = parser.parse_args()
     if a.command == "download":
         download_yfinance(a.symbols, a.start, a.end, a.output_dir)
+        return
+    if a.command == "import-prices":
+        import_price_csv(a.input, a.output, Provenance.now(a.provider, source_url=a.source_url,
+                         license_note=a.license_note, adjustment_basis=a.adjustment_basis), symbol=a.symbol)
+        return
+    if a.command == "fetch-prices":
+        provider = provider_from_config(a.provider)
+        try:
+            frame = provider.prices(a.symbol, a.start, a.end)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        write_dataset(a.output, frame, Provenance.now(a.provider, source_url=f"provider API: {a.symbol}",
+                      license_note="Confirm subscription, exchange entitlements, and redistribution rights before use."))
         return
 
     prices = load_directory(a.data_dir)

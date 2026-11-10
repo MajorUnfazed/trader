@@ -19,3 +19,9 @@ execution:
   india_capital_gains_tax_rate: 0.10
   us_withholding_tax_rate: 0.25
   usd_inr: 83.0
+data_sources:
+  # "csv" is safest for reproducible research. Remote adapters require your own key.
+  prices: csv
+  corporate_actions: csv
+  fundamentals: csv
+  fx: csv

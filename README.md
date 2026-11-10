@@ -24,6 +24,12 @@ pytest -q
 
 ## Historical data and sample backtest
 
+Read [the data-source decision record](docs/data-sources.md) before choosing a
+vendor. It compares official Indian exchange sources, SEC/CRSP, Tiingo, EODHD,
+benchmark and FX sources, and makes the licensing/coverage boundaries explicit.
+The repository now includes CSV normalization, source sidecars, and opt-in
+Tiingo/EODHD adapters; it includes neither credentials nor paid market data.
+
 Run a structural data audit before backtesting:
 
 ```powershell

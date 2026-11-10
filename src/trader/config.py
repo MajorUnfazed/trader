@@ -20,12 +20,21 @@ class ExecutionConfig:
     usd_inr: float = 83.0
 
 @dataclass
+class DataSourceConfig:
+    """Provider selection only. Secrets belong in environment variables, never config files."""
+    prices: str = "csv"
+    corporate_actions: str = "csv"
+    fundamentals: str = "csv"
+    fx: str = "csv"
+
+@dataclass
 class Config:
     base_currency: str = "INR"
     initial_capital_inr: float = 100_000
     allocations: dict = field(default_factory=lambda: {"dividend_quality": .30, "dividend_growth": .20, "long_term_growth": .30, "cash_reserve": .20})
     risk: RiskConfig = field(default_factory=RiskConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    data_sources: DataSourceConfig = field(default_factory=DataSourceConfig)
     def __post_init__(self):
         if not 0 < self.execution.max_volume_participation <= 1:
             raise ValueError('max_volume_participation must be in (0, 1]')
@@ -39,4 +48,4 @@ def load_config(path: str = "config.yml") -> Config:
     p = Path(path)
     if not p.exists(): return Config()
     raw = yaml.safe_load(p.read_text()) or {}
-    return Config(**{**raw, "risk": RiskConfig(**raw.get("risk", {})), "execution": ExecutionConfig(**raw.get("execution", {}))})
+    return Config(**{**raw, "risk": RiskConfig(**raw.get("risk", {})), "execution": ExecutionConfig(**raw.get("execution", {})), "data_sources": DataSourceConfig(**raw.get("data_sources", {}))})
