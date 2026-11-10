@@ -6,6 +6,7 @@ from .portfolio import Portfolio
 from .strategies import dividend_quality, dividend_growth, long_term_growth, Signal, target_weights, fundamentals_as_of, universe_as_of
 from .calendars import valid_sessions
 from .risk import drift_targets, quantity_to_target
+from .data import total_return_index
 
 
 @dataclass
@@ -17,38 +18,72 @@ class BacktestResult:
     universe_membership_used: bool = False
 
     def metrics(self) -> dict:
+        if len(self.equity) < 2:
+            raise ValueError("At least two equity observations are required for metrics")
         r = self.equity.pct_change().dropna()
         years = max((self.equity.index[-1] - self.equity.index[0]).days / 365.25, 1 / 365.25)
         total = self.equity.iloc[-1] / self.equity.iloc[0] - 1
         peak = self.equity.cummax()
-        dd = (self.equity / peak - 1).min()
+        drawdown = self.equity / peak - 1
+        downside = r[r < 0]
+        volatility = float(r.std() * np.sqrt(252)) if len(r) > 1 else 0.0
+        sharpe = float(r.mean() / r.std() * np.sqrt(252)) if len(r) > 1 and r.std() else 0.0
+        downside_vol = float(np.sqrt((r.clip(upper=0) ** 2).mean()) * np.sqrt(252)) if len(r) else 0.0
+        sortino = float(r.mean() * 252 / downside_vol) if downside_vol else 0.0
+        cagr = (1 + total) ** (1 / years) - 1 if total > -1 else -1.0
+        max_dd = float(drawdown.min())
         return {
-            "total_return": total,
-            "cagr": (1 + total) ** (1 / years) - 1,
-            "max_drawdown": dd,
-            "volatility": r.std() * np.sqrt(252),
-            "sharpe": (r.mean() / r.std() * np.sqrt(252)) if r.std() else 0,
-            "dividend_income_inr": self.portfolio.dividend_income_inr,
-            "ending_value_inr": self.equity.iloc[-1],
+            "total_return": float(total),
+            "cagr": float(cagr),
+            "max_drawdown": max_dd,
+            "calmar": float(cagr / abs(max_dd)) if max_dd < 0 else None,
+            "volatility": volatility,
+            "sharpe": sharpe,
+            "sortino": sortino,
+            "best_day": float(r.max()) if len(r) else 0.0,
+            "worst_day": float(r.min()) if len(r) else 0.0,
+            "observations": int(len(self.equity)),
+            "trade_count": len(self.portfolio.fills),
+            "dividend_income_inr": float(self.portfolio.dividend_income_inr),
+            "ending_value_inr": float(self.equity.iloc[-1]),
             "universe_membership_used": self.universe_membership_used,
             "data_warning": None if self.universe_membership_used else "No historical universe membership supplied; results may contain survivorship bias.",
         }
 
 
 def benchmark_metrics(df: pd.DataFrame, start: str, end: str) -> dict:
-    """Price-return benchmark metrics; use total-return series for dividend-inclusive comparisons."""
-    h = df.loc[start:end, "adj_close"].dropna()
-    if len(h) < 2:
+    """Dividend-inclusive benchmark metrics where source fields permit it.
+
+    Uses an explicit total_return_index if provided, otherwise constructs a
+    split/dividend-reinvested proxy from close/dividend/split_factor. Falls back
+    to vendor adjusted close only when raw corporate-action fields are absent.
+    """
+    selected = df.loc[start:end]
+    if len(selected) < 2:
         raise ValueError("Benchmark has fewer than two observations")
+    if "total_return_index" in selected:
+        h = pd.to_numeric(selected["total_return_index"], errors="coerce").dropna()
+        basis = "provider_total_return_index"
+    elif {"close", "dividend"}.issubset(selected.columns):
+        h = total_return_index(selected)
+        basis = "reinvested_dividend_split_proxy"
+    else:
+        h = pd.to_numeric(selected["adj_close"], errors="coerce").dropna()
+        basis = "vendor_adjusted_close_proxy"
+    if len(h) < 2 or h.isna().any() or (h <= 0).any():
+        raise ValueError("Benchmark requires at least two valid positive total-return observations")
     r = h.pct_change().dropna()
     years = max((h.index[-1] - h.index[0]).days / 365.25, 1 / 365.25)
     total = h.iloc[-1] / h.iloc[0] - 1
+    peak = h.cummax()
+    cagr = (1 + total) ** (1 / years) - 1
     return {
-        "total_return": total,
-        "cagr": (1 + total) ** (1 / years) - 1,
-        "max_drawdown": (h / h.cummax() - 1).min(),
-        "volatility": r.std() * np.sqrt(252),
-        "sharpe": r.mean() / r.std() * np.sqrt(252) if r.std() else 0,
+        "total_return": float(total),
+        "cagr": float(cagr),
+        "max_drawdown": float((h / peak - 1).min()),
+        "volatility": float(r.std() * np.sqrt(252)) if len(r) > 1 else 0.0,
+        "sharpe": float(r.mean() / r.std() * np.sqrt(252)) if len(r) > 1 and r.std() else 0.0,
+        "return_basis": basis,
     }
 
 
@@ -73,7 +108,6 @@ def run_backtest(
     )
     if not dates:
         raise ValueError("No prices in selected period")
-
     if usd_inr is not None:
         usd_inr = usd_inr.sort_index().astype(float).reindex(pd.DatetimeIndex(dates), method="ffill")
         if usd_inr.isna().any():
@@ -84,7 +118,6 @@ def run_backtest(
 
     p = Portfolio(cfg.initial_capital_inr)
     equity, decisions, snapshots = [], [], []
-    # Orders are held per symbol until that symbol's next actual session.
     pending: dict[str, tuple[float, str, pd.Timestamp]] = {}
 
     for i, day in enumerate(dates):
@@ -106,7 +139,6 @@ def run_backtest(
         }
         fx = fx_at(day)
 
-        # Corporate actions and dividend cashflows are processed before trading.
         for symbol, df in prices.items():
             if day in df.index:
                 p.apply_split(symbol, float(df.loc[day, "split_factor"]) if "split_factor" in df else 1.0)
@@ -118,7 +150,19 @@ def run_backtest(
                 p.declare_dividend(symbol, float(df.loc[day, "dividend"]), day.date(), payment, cfg.execution, fx)
         p.pay_dividends(day.date(), fx)
 
-        # Execute each order only when its own exchange has an opening quote.
+        # A delisting settlement is an explicit cash consideration per share.
+        # Never silently mark a disappeared security at zero or its stale close.
+        for symbol, df in prices.items():
+            if day in df.index and "delisting_price" in df.columns:
+                settlement = df.loc[day, "delisting_price"]
+                if pd.notna(settlement):
+                    if float(settlement) <= 0:
+                        raise ValueError(f"Invalid delisting settlement for {symbol} on {day.date()}")
+                    if symbol in p.positions:
+                        p.sell(symbol, float(settlement), cfg.execution, day.date(),
+                               "Cash delisting settlement", usd_inr=fx, volume=None)
+                    pending.pop(symbol, None)
+
         open_quotes = {
             symbol: float(df.loc[day, "open"])
             for symbol, df in prices.items()
@@ -135,15 +179,10 @@ def run_backtest(
             position = p.positions.get(symbol)
             current_price = open_quotes[symbol]
             volume = float(prices[symbol].loc[day, "volume"]) if "volume" in prices[symbol].columns else None
-            current_value = (
-                position.quantity * current_price * p.fx(position.currency, fx)
-                if position else 0.0
-            )
+            current_value = position.quantity * current_price * p.fx(position.currency, fx) if position else 0.0
             target_value = max(0.0, total * target)
             if current_value > target_value:
-                qty = quantity_to_target(
-                    position, current_price, p.fx(position.currency, fx), total, target
-                )
+                qty = quantity_to_target(position, current_price, p.fx(position.currency, fx), total, target)
                 fill = p.sell(symbol, current_price, cfg.execution, day.date(), reason, quantity=qty, usd_inr=fx, volume=volume)
             elif target_value > current_value:
                 sector = str(metadata.loc[symbol].get("sector", "Unknown")) if symbol in metadata.index else (position.sector if position else "Unknown")
@@ -159,7 +198,6 @@ def run_backtest(
             if fill is not None:
                 pending.pop(symbol, None)
 
-        # Re-evaluate strategy targets only on the configured rebalance cadence.
         if i % rebalance_days == 0:
             signals = dividend_quality(strategy_available) + dividend_growth(strategy_available) + long_term_growth(strategy_prices, day)
             decisions.extend(signals)
@@ -170,22 +208,17 @@ def run_backtest(
                         reason = "Removed from historical universe" if held_symbol not in active_symbols else "Strategy exit: no qualifying signal"
                         targets[held_symbol] = (0.0, reason)
                 for symbol, (weight, reason) in targets.items():
-                    # Refresh the desired target while preserving the original
-                    # decision timestamp so a closed exchange does not defer
-                    # the same order indefinitely.
                     if symbol in pending:
                         pending[symbol] = (weight, reason, pending[symbol][2])
                     else:
                         pending[symbol] = (weight, reason, day)
 
-        # Risk reductions are independent of strategy rebalances and never add exposure.
         p.value(close_quotes, currencies, fx)
         reductions = drift_targets(p, close_quotes, currencies, fx, cfg.risk)
         for symbol, (weight, reason) in reductions.items():
             prior = pending.get(symbol)
             if prior is None or weight < prior[0]:
                 pending[symbol] = (weight, reason, day)
-
         value = p.value(close_quotes, currencies, fx)
         equity.append((day, value))
         snapshots.append((day.date(), value, p.cash_inr, p.realised_pnl_inr, p.dividend_income_inr))
