@@ -72,6 +72,16 @@ def main():
             usd_inr=fx, universe_membership=membership,
             strategy_filter=None if a.strategy == "all" else a.strategy,
         )
+        for fold in report["folds"]:
+            fold["benchmarks"] = {
+                symbol: benchmark_metrics(
+                    frame, fold["test_start"], fold["test_end"], usd_inr=fx,
+                    currency=(str(frame["currency"].dropna().iloc[0]).upper()
+                              if "currency" in frame and frame["currency"].notna().any()
+                              else ("USD" if symbol.upper() in {"^GSPC", "SPY", "VOO"} else "INR")),
+                )
+                for symbol, frame in benchmark_data.items()
+            }
         print(json.dumps(report, indent=2))
         return
 
