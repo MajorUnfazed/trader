@@ -85,3 +85,27 @@ def test_backtest_cash_settles_explicit_delisting_price():
     settlements = [fill for fill in result.portfolio.fills if fill.reason == "Cash delisting settlement"]
     assert len(settlements) == 1
     assert settlements[0].price_native == 20.0
+
+from trader.portfolio import Position
+from trader.storage import connect, save_portfolio
+from trader.paper import run_paper
+
+
+def test_paper_cash_settles_delisting_and_records_audit_fill():
+    day = pd.Timestamp("2024-01-03")
+    close = pd.Series([100.0], index=[day])
+    prices = {"ABC": pd.DataFrame({
+        "open": close, "high": close, "low": close, "close": close,
+        "adj_close": close, "volume": 0, "dividend": 0.0,
+        "tradable": False, "delisting_price": [20.0],
+    }, index=[day])}
+    db = connect(":memory:")
+    portfolio = __import__("trader.portfolio", fromlist=["Portfolio"]).Portfolio(0)
+    portfolio.positions["ABC"] = Position("ABC", 10, 100.0, 100.0, "INR", "Test")
+    save_portfolio(db, portfolio, "2024-01-02")
+    db.commit()
+    result = run_paper(prices, pd.DataFrame(columns=["symbol", "as_of_date"]), Config(),
+                       db, as_of=day, validate_calendars=False)
+    assert "ABC" not in result["portfolio"].positions
+    row = db.execute("SELECT side,quantity,price_native,reason FROM fills").fetchone()
+    assert row == ("SELL", 10, 20.0, "Cash delisting settlement")

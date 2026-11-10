@@ -28,15 +28,17 @@ Use a **survivorship-aware** source where possible (for example NSE/BSE licensed
 
 ```csv
 date,open,high,low,close,adj_close,volume,dividend,split_factor,dividend_payment_date,delisting_price
-2023-01-02,100,101,99,100,100,100000,0,1,
-2023-03-15,105,106,104,105,105,80000,1.2,1,2023-04-10
+2023-01-02,100,101,99,100,100,100000,0,1,,
+2023-03-15,105,106,104,105,105,80000,1.2,1,2023-04-10,
 ```
 
 `close` is the native-currency tradable close; `adj_close` must be vendor-adjusted for splits and dividends and is used only for indicators. `split_factor` is new shares per old share on that date (normally `1`). The optional `delisting_price` column records explicit cash settlement per share on the final event row; the backtest cash-settles an open holding at that value and cancels pending orders. It must be sourced from an exchange/company settlement notice or a reliable vendor—do not fabricate it. Without a verified settlement value, a delisted holding cannot be valued reliably and should be flagged for manual resolution. Dividend rows should include the actual `dividend_payment_date`; without it, legacy files are paid on the ex-date and overstate cash availability. Add fundamentals in `data/fundamentals.csv` with `symbol,as_of_date,dividend_yield,payout_ratio,fcf_positive,debt_to_equity,revenue_growth,earnings_growth,dividend_growth_5y,sector,currency,exchange`. `as_of_date` must be when the information was publicly available—not its fiscal period end—to prevent look-ahead bias. Multiple snapshots per symbol are supported; only the latest snapshot dated on or before each decision is used.
 
 Instrument-specific halts should be represented by an exchange-session row with `tradable=false` and `volume=0`; carry the last known OHLC/adjusted-close values in that row. Halted rows remain in the calendar history but are excluded from marks, momentum indicators, and executions. Missing rows inside an instrument's active history are still rejected, so a halt must not be silently represented as a missing quote. The optional `tradable` CSV field accepts `true/false`, `1/0`, or `yes/no`.
 
-Price CSVs reject duplicate dates, invalid/non-numeric OHLCV values, negative volume/dividends, and invalid split factors. Fundamentals reject duplicate symbol/date snapshots rather than selecting one arbitrarily.\n\nSessions are validated through `pandas-market-calendars` using `exchange` (`NSE`, `BSE`, or `NYSE`); if omitted, INR defaults to NSE and USD to NYSE. Vendor rows on exchange holidays and missing quotes inside an instrument's active history are rejected.
+Price CSVs reject duplicate dates, invalid/non-numeric OHLCV values, negative volume/dividends, and invalid split factors. Fundamentals reject duplicate symbol/date snapshots rather than selecting one arbitrarily.
+
+Sessions are validated through `pandas-market-calendars` using `exchange` (`NSE`, `BSE`, or `NYSE`); if omitted, INR defaults to NSE and USD to NYSE. Vendor rows on exchange holidays and missing quotes inside an instrument's active history are rejected.
 
 For a point-in-time eligible universe, provide `data/universe_membership.csv` with `symbol,start_date,end_date`. Dates are inclusive; leave `end_date` blank for current membership. Multiple non-overlapping intervals per symbol are supported. The backtest only generates signals for constituents active on each decision date, cancels stale buy intents after removal, and schedules an exit for held names that leave the supplied universe. Include historical constituents that later disappeared, plus their full price/corporate-action history, or survivorship bias remains. Delisted securities still require a reliable final trading/settlement price; this file is not a substitute for delisting-return data. If omitted, backtest metrics explicitly warn that survivorship bias may remain.
 
@@ -58,7 +60,17 @@ python -m trader.cli download --symbols RELIANCE.NS TCS.NS AAPL MSFT --start 202
 
 `yfinance` is not a production data contract. It may have gaps, changed symbols, adjusted-price conventions, and rate limits. Production deployment requires a licensed provider and point-in-time corporate actions, FX, fundamentals, and constituent histories.
 
-## Walk-forward research\n\nRun sequential out-of-sample windows after a historical warm-up period:\n\n```powershell\npython -m trader.cli walk-forward --data-dir data/raw --fundamentals data/fundamentals.csv --universe-membership data/universe_membership.csv --start 2015-01-01 --end 2024-12-31 --train-days 1095 --test-days 365 --step-days 365 --fx-file data/usdinr.csv\n```\n\nWindow lengths are calendar days. The current strategies are fixed rules, so the training window is used for historical warm-up/research, not parameter fitting. Every test fold is reported; compare the full sequence with matched total-return benchmarks rather than choosing the best fold. The report includes mean and median CAGR, return, drawdown, Sharpe, Sortino, and volatility.\n\n## Paper operation
+## Walk-forward research
+
+Run sequential out-of-sample windows after a historical warm-up period:
+
+```powershell
+python -m trader.cli walk-forward --data-dir data/raw --fundamentals data/fundamentals.csv --universe-membership data/universe_membership.csv --start 2015-01-01 --end 2024-12-31 --train-days 1095 --test-days 365 --step-days 365 --fx-file data/usdinr.csv
+```
+
+Window lengths are calendar days. The current strategies are fixed rules, so the training window is used for historical warm-up/research, not parameter fitting. Every test fold is reported; compare the full sequence with matched total-return benchmarks rather than choosing the best fold. The report includes mean and median CAGR, return, drawdown, Sharpe, Sortino, and volatility.
+
+## Paper operation
 
 The `paper-run` command is stateful. It restores SQLite portfolio state, processes only dates later than its last completed session, executes previously pending orders on the next available session open for that symbol, and records new pending orders after the latest close. Re-running unchanged data is idempotent and produces no duplicate trades. Schedule it once after data for the relevant exchanges is complete.
 
