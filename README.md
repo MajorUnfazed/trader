@@ -24,6 +24,14 @@ pytest -q
 
 ## Historical data and sample backtest
 
+Run a structural data audit before backtesting:
+
+```powershell
+python -m trader.cli audit-data --data-dir data/raw --fundamentals data/fundamentals.csv --universe-membership data/universe_membership.csv --fx-file data/usdinr.csv
+```
+
+The audit reports symbol coverage, halts, corporate actions, delisting settlements, fundamentals coverage, membership, FX coverage, and known structural warnings. It cannot verify the truth, licensing, or completeness of a vendor's source data.
+
 Use a **survivorship-aware** source where possible (for example NSE/BSE licensed data, CRSP/Compustat, Refinitiv, FactSet, or a provider with point-in-time constituents/fundamentals). The built-in CSV reader expects one file per symbol in `data/raw/`:
 
 ```csv

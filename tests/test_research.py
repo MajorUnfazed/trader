@@ -152,3 +152,22 @@ def test_us_benchmark_is_converted_to_inr_with_daily_fx():
     assert report["total_return"] == pytest.approx(0.2375)
     assert report["fx_adjusted_to_inr"] is True
     assert report["currency"] == "INR"
+
+from trader.audit import audit_data
+
+
+def test_data_audit_flags_missing_survivorship_and_fx_inputs():
+    dates = pd.date_range("2024-01-01", periods=2)
+    close = pd.Series([100.0, 101.0], index=dates)
+    prices = {"US": pd.DataFrame({
+        "close": close, "dividend": 0.0, "split_factor": 1.0,
+        "tradable": True,
+    }, index=dates)}
+    fundamentals = pd.DataFrame([{
+        "symbol": "US", "as_of_date": "2023-12-31", "currency": "USD",
+    }])
+    report = audit_data(prices, fundamentals)
+    assert report["status"] == "WARN"
+    assert any("survivorship" in warning for warning in report["warnings"])
+    assert any("static FX" in warning for warning in report["warnings"])
+    assert report["coverage"]["US"]["rows"] == 2

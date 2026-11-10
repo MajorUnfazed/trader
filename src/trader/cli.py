@@ -9,6 +9,7 @@ from .backtest import run_backtest, benchmark_metrics
 from .research import walk_forward_backtest
 from .storage import connect, persist_result
 from .paper import run_paper
+from .audit import audit_data
 
 
 def fundamentals(path):
@@ -24,7 +25,7 @@ def main():
     dl.add_argument("--end", required=True)
     dl.add_argument("--output-dir", default="data/raw")
 
-    for cmd in ("backtest", "paper-run", "walk-forward"):
+    for cmd in ("backtest", "paper-run", "walk-forward", "audit-data"):
         q = sub.add_parser(cmd)
         q.add_argument("--data-dir", default="data/raw")
         q.add_argument("--fundamentals", required=True)
@@ -34,8 +35,9 @@ def main():
         q.add_argument("--database", default="data/trader.db")
         q.add_argument("--benchmarks", nargs="*")
         q.add_argument("--fx-file")
-        if cmd in ("backtest", "walk-forward"):
+        if cmd in ("backtest", "walk-forward", "audit-data"):
             q.add_argument("--universe-membership")
+        if cmd in ("backtest", "walk-forward"):
             q.add_argument("--strategy", choices=("all", "dividend_quality", "dividend_growth", "long_term_growth"), default="all")
         if cmd == "walk-forward":
             q.add_argument("--train-days", type=int, default=1095)
@@ -48,6 +50,11 @@ def main():
         return
 
     prices = load_directory(a.data_dir)
+    if a.command == "audit-data":
+        membership = read_universe_membership_csv(a.universe_membership) if a.universe_membership else None
+        fx = read_fx_csv(a.fx_file) if a.fx_file else None
+        print(json.dumps(audit_data(prices, fundamentals(a.fundamentals), membership, fx), indent=2))
+        return
     all_dates = [d for frame in prices.values() for d in frame.index]
     benchmark_data = {symbol: prices.pop(symbol) for symbol in (a.benchmarks or []) if symbol in prices}
     if not prices:
