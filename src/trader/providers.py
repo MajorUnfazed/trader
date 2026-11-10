@@ -97,6 +97,19 @@ def normalize_prices(frame: pd.DataFrame, *, symbol: str | None = None) -> pd.Da
     return result[ordered + [c for c in result.columns if c not in ordered]].sort_values("date")
 
 
+def restrict_to_requested_range(frame: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    """Reject a vendor's plan-limited or ignored date filter; never relabel it."""
+    lower, upper = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
+    if upper < lower:
+        raise ValueError("end must be on or after start")
+    dates = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
+    limited = frame.loc[(dates >= lower) & (dates <= upper)].copy()
+    if limited.empty:
+        observed = "no dates" if frame.empty else f"{dates.min().date()} through {dates.max().date()}"
+        raise ValueError(f"provider returned no prices in requested range {lower.date()} through {upper.date()} (received {observed})")
+    return limited
+
+
 def normalize_corporate_actions(frame: pd.DataFrame, *, symbol: str | None = None) -> pd.DataFrame:
     """Validate explicit corporate-action events without inferring missing dates."""
     result = frame.rename(columns={c: _normalise_name(c).replace(" ", "_") for c in frame.columns}).copy()
@@ -174,7 +187,7 @@ class TiingoProvider(_JsonHTTPProvider):
     def prices(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         query = urlencode({"startDate": start, "endDate": end, "token": self._key()})
         rows = self._get_json(f"https://api.tiingo.com/tiingo/daily/{symbol}/prices?{query}")
-        return normalize_prices(pd.DataFrame(rows), symbol=symbol)
+        return restrict_to_requested_range(normalize_prices(pd.DataFrame(rows), symbol=symbol), start, end)
     def corporate_actions(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         raise NotImplementedError("Use the provider's entitled corporate-action endpoint and import its export; API availability varies by plan.")
 
@@ -182,16 +195,33 @@ class TiingoProvider(_JsonHTTPProvider):
 class EODHDProvider(_JsonHTTPProvider):
     """Global EOD adapter; coverage and redistribution are plan-dependent."""
     name = "eodhd"
-    def prices(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        query = urlencode({"from": start, "to": end, "fmt": "json", "api_token": self._key()})
-        rows = self._get_json(f"https://eodhd.com/api/eod/{symbol}?{query}")
-        return normalize_prices(pd.DataFrame(rows), symbol=symbol)
-    def corporate_actions(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+    def _dividends(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         query = urlencode({"from": start, "to": end, "fmt": "json", "api_token": self._key()})
         rows = self._get_json(f"https://eodhd.com/api/div/{symbol}?{query}")
         events = pd.DataFrame(rows).rename(columns={"date": "ex_date", "paymentDate": "payment_date", "value": "amount"})
+        if events.empty:
+            return pd.DataFrame(columns=["date", "dividend", "dividend_payment_date"])
         events["event_type"] = "dividend"
-        return normalize_corporate_actions(events, symbol=symbol)
+        events = normalize_corporate_actions(events, symbol=symbol)
+        events["dividend"] = pd.to_numeric(events.get("amount"), errors="coerce")
+        if events["dividend"].isna().any() or (events["dividend"] < 0).any():
+            raise ValueError("EODHD returned an invalid dividend amount")
+        return events.rename(columns={"ex_date": "date", "payment_date": "dividend_payment_date"})[["date", "dividend", "dividend_payment_date"]]
+
+    def prices(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        query = urlencode({"from": start, "to": end, "fmt": "json", "api_token": self._key()})
+        rows = self._get_json(f"https://eodhd.com/api/eod/{symbol}?{query}")
+        prices = pd.DataFrame(rows)
+        # EODHD's price response does not include cash dividends.  Fetch its
+        # explicit action stream rather than treating a missing field as zero.
+        dividends = self._dividends(symbol, start, end)
+        if "date" in prices:
+            prices["date"] = pd.to_datetime(prices["date"], errors="coerce").dt.normalize()
+        prices = prices.merge(dividends, on="date", how="left")
+        prices["dividend"] = prices["dividend"].fillna(0.0)
+        return restrict_to_requested_range(normalize_prices(prices, symbol=symbol), start, end)
+    def corporate_actions(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        return self._dividends(symbol, start, end).rename(columns={"date": "ex_date", "dividend": "amount"})
 
 
 def provider_from_config(name: str, api_key: str | None = None) -> MarketDataProvider:

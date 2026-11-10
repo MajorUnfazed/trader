@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from trader.data import read_fundamentals_csv, read_price_csv
-from trader.providers import Provenance, fetch_prices_with_fallback, import_price_csv, normalize_corporate_actions, normalize_prices, provider_from_config
+from trader.providers import EODHDProvider, Provenance, fetch_prices_with_fallback, import_price_csv, normalize_corporate_actions, normalize_prices, provider_from_config, restrict_to_requested_range
 
 
 def test_vendor_price_aliases_normalize_without_losing_actions():
@@ -77,3 +77,22 @@ def test_provider_chain_does_not_hide_auth_or_symbol_errors(monkeypatch):
     with pytest.raises(HTTPError) as error:
         fetch_prices_with_fallback(["tiingo", "eodhd"], "AAPL", "2024-01-01", "2024-01-02")
     assert error.value.code == 403
+
+
+def test_eodhd_joins_explicit_dividend_events(monkeypatch):
+    provider = EODHDProvider("key")
+    responses = iter([
+        [{"date": "2024-01-02", "open": 10, "high": 11, "low": 9, "close": 10,
+          "adjusted_close": 9.8, "volume": 100}],
+        [{"date": "2024-01-02", "value": 0.2, "paymentDate": "2024-01-15"}],
+    ])
+    monkeypatch.setattr(provider, "_get_json", lambda _: next(responses))
+    frame = provider.prices("AAPL.US", "2024-01-01", "2024-01-02")
+    assert frame.iloc[0]["dividend"] == pytest.approx(0.2)
+    assert str(frame.iloc[0]["dividend_payment_date"].date()) == "2024-01-15"
+
+
+def test_provider_range_guard_rejects_plan_limited_unrequested_data():
+    frame = pd.DataFrame({"date": pd.to_datetime(["2025-11-10"]), "close": [1]})
+    with pytest.raises(ValueError, match="no prices in requested range"):
+        restrict_to_requested_range(frame, "2024-01-01", "2024-01-05")

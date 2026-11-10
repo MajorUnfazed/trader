@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+from urllib.error import HTTPError
 import pandas as pd
 
 from .config import load_config
@@ -86,8 +87,10 @@ def main():
             symbols[provider_name] = provider_symbol
         try:
             frame, used_provider = fetch_prices_with_fallback(selected, symbols, a.start, a.end)
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError) as exc:
             parser.error(str(exc))
+        except HTTPError as exc:
+            parser.error(f"remote provider request failed: HTTP {exc.code} {exc.reason}")
         write_dataset(a.output, frame, Provenance.now(used_provider, source_url=f"provider API: {a.symbol}",
                       license_note="Confirm subscription, exchange entitlements, and redistribution rights before use."))
         return
