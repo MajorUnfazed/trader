@@ -9,13 +9,20 @@ def fundamentals_as_of(fundamentals: pd.DataFrame, decision_date) -> pd.DataFram
     """One latest publicly available fundamental snapshot per symbol."""
     required={"symbol","as_of_date"}
     if missing:=required-set(fundamentals.columns): raise ValueError(f"Missing fundamentals columns: {sorted(missing)}")
-    f=fundamentals.copy(); f["as_of_date"]=pd.to_datetime(f["as_of_date"], errors="coerce")
-    if f["as_of_date"].isna().any() or f["symbol"].isna().any():
-        raise ValueError("Fundamentals require valid symbol and as_of_date values")
-    if f.duplicated(["symbol", "as_of_date"]).any():
-        raise ValueError("Duplicate point-in-time fundamentals snapshots for a symbol/date")
-    f=f[f["as_of_date"] <= pd.Timestamp(decision_date)].sort_values(["symbol","as_of_date"])
-    return f.groupby("symbol",as_index=True).tail(1).set_index("symbol")
+    f = fundamentals.copy()
+    f["as_of_date"] = pd.to_datetime(f["as_of_date"], errors="coerce")
+    availability_col = "available_at" if "available_at" in f.columns else "as_of_date"
+    if availability_col == "available_at":
+        f["available_at"] = pd.to_datetime(f["available_at"], errors="coerce")
+    if f["as_of_date"].isna().any() or f[availability_col].isna().any() or f["symbol"].isna().any():
+        raise ValueError("Fundamentals require valid symbol, as_of_date, and availability timestamp values")
+    if f.duplicated(["symbol", availability_col]).any():
+        raise ValueError("Duplicate point-in-time fundamentals snapshots for a symbol/availability timestamp")
+    # Decisions are made after the completed daily session; include publications
+    # timestamped during that date, but never later publications.
+    cutoff = pd.Timestamp(decision_date).normalize() + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+    f = f[f[availability_col] <= cutoff].sort_values(["symbol", availability_col])
+    return f.groupby("symbol", as_index=True).tail(1).set_index("symbol")
 
 def _num(row, col, default=0.0): return float(row.get(col, default) if pd.notna(row.get(col, default)) else default)
 

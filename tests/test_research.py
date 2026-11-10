@@ -109,3 +109,34 @@ def test_paper_cash_settles_delisting_and_records_audit_fill():
     assert "ABC" not in result["portfolio"].positions
     row = db.execute("SELECT side,quantity,price_native,reason FROM fills").fetchone()
     assert row == ("SELL", 10, 20.0, "Cash delisting settlement")
+
+from trader.strategies import fundamentals_as_of
+
+
+def test_fundamentals_use_publication_timestamp_when_available():
+    frame = pd.DataFrame([
+        {"symbol": "A", "as_of_date": "2024-01-01", "available_at": "2024-01-05T15:30:00", "payout_ratio": 0.4},
+        {"symbol": "A", "as_of_date": "2024-01-01", "available_at": "2024-02-05T15:30:00", "payout_ratio": 0.9},
+    ])
+    selected = fundamentals_as_of(frame, "2024-01-05")
+    assert selected.loc["A", "payout_ratio"] == 0.4
+
+
+def test_backtest_can_isolate_one_strategy_sleeve():
+    dates = pd.date_range("2024-01-02", periods=3, freq="B")
+    close = pd.Series([100.0, 100.0, 100.0], index=dates)
+    prices = {"ABC": pd.DataFrame({
+        "open": close, "high": close, "low": close, "close": close,
+        "adj_close": close, "volume": 100_000, "dividend": 0.0,
+    }, index=dates)}
+    fundamentals = pd.DataFrame([{
+        "symbol": "ABC", "as_of_date": "2024-01-01", "dividend_yield": 0.03,
+        "payout_ratio": 0.5, "fcf_positive": True, "debt_to_equity": 0.2,
+        "dividend_growth_5y": 0.0, "sector": "Test", "currency": "INR",
+    }])
+    result = run_backtest(prices, fundamentals, Config(), str(dates[0].date()),
+                          str(dates[-1].date()), validate_calendars=False,
+                          strategy_filter="dividend_quality")
+    assert result.metrics()["strategy"] == "dividend_quality"
+    assert any(signal.strategy == "dividend_quality" for signal in result.decisions)
+    assert all(signal.strategy == "dividend_quality" for signal in result.decisions)

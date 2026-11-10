@@ -38,8 +38,8 @@ def main():
             q.add_argument("--universe-membership")
             q.add_argument("--strategy", choices=("all", "dividend_quality", "dividend_growth", "long_term_growth"), default="all")
         if cmd == "walk-forward":
-            q.add_argument("--train-days", type=int, default=756)
-            q.add_argument("--test-days", type=int, default=252)
+            q.add_argument("--train-days", type=int, default=1095)
+            q.add_argument("--test-days", type=int, default=365)
             q.add_argument("--step-days", type=int)
 
     a = parser.parse_args()
