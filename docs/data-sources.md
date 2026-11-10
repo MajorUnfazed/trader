@@ -69,11 +69,16 @@ split value as “no event”, and writes provenance beside the normalized file.
 It never fabricates payment dates, adjustment conventions, delisting values,
 or missing prices.
 
-Remote adapters are intentionally narrow and opt-in:
+Remote adapters are intentionally narrow and opt-in. Store credentials in your
+local shell/environment manager (for example `TRADER_TIINGO_API_KEY` and
+`TRADER_EODHD_API_KEY`); do **not** commit them to `.env`, configuration, or a
+dataset sidecar. An ordered provider chain only advances on an HTTP 429 rate
+limit. It deliberately does not mask invalid symbols, forbidden plans, bad
+credentials, or corrupted responses by switching sources.
 
 ```powershell
 $env:TRADER_TIINGO_API_KEY = "your-key"
-python -m trader.cli fetch-prices --provider tiingo --symbol AAPL --start 2020-01-01 --end 2024-12-31 --output data/raw/AAPL.csv
+python -m trader.cli fetch-prices --providers tiingo eodhd --symbol AAPL --provider-symbol eodhd=AAPL.US --start 2020-01-01 --end 2024-12-31 --output data/raw/AAPL.csv
 ```
 
 `tiingo` (US EOD) and `eodhd` (global EOD) are implemented only after the user

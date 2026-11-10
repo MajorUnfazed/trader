@@ -1,10 +1,11 @@
 import json
+from urllib.error import HTTPError
 
 import pandas as pd
 import pytest
 
 from trader.data import read_fundamentals_csv, read_price_csv
-from trader.providers import Provenance, import_price_csv, normalize_corporate_actions, normalize_prices, provider_from_config
+from trader.providers import Provenance, fetch_prices_with_fallback, import_price_csv, normalize_corporate_actions, normalize_prices, provider_from_config
 
 
 def test_vendor_price_aliases_normalize_without_losing_actions():
@@ -51,3 +52,28 @@ def test_remote_provider_refuses_missing_credential(monkeypatch):
     monkeypatch.delenv("TRADER_TIINGO_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="requires an API key"):
         provider_from_config("tiingo").prices("AAPL", "2024-01-01", "2024-01-02")
+
+
+def test_provider_chain_only_falls_back_after_rate_limit(monkeypatch):
+    attempted = []
+    class First:
+        def prices(self, *_):
+            attempted.append("tiingo")
+            raise HTTPError("https://example.test", 429, "limit", {}, None)
+    class Second:
+        def prices(self, *_):
+            attempted.append("eodhd")
+            return pd.DataFrame({"close": [1]})
+    monkeypatch.setattr("trader.providers.provider_from_config", lambda name: First() if name == "tiingo" else Second())
+    frame, source = fetch_prices_with_fallback(["tiingo", "eodhd"], "AAPL", "2024-01-01", "2024-01-02")
+    assert source == "eodhd" and attempted == ["tiingo", "eodhd"] and frame.iloc[0]["close"] == 1
+
+
+def test_provider_chain_does_not_hide_auth_or_symbol_errors(monkeypatch):
+    class Forbidden:
+        def prices(self, *_):
+            raise HTTPError("https://example.test", 403, "forbidden", {}, None)
+    monkeypatch.setattr("trader.providers.provider_from_config", lambda _: Forbidden())
+    with pytest.raises(HTTPError) as error:
+        fetch_prices_with_fallback(["tiingo", "eodhd"], "AAPL", "2024-01-01", "2024-01-02")
+    assert error.value.code == 403

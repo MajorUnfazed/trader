@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlencode
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pandas as pd
@@ -201,3 +202,27 @@ def provider_from_config(name: str, api_key: str | None = None) -> MarketDataPro
         return providers[name.lower()](key)
     except KeyError as exc:
         raise ValueError(f"Unsupported provider {name!r}; supported remote adapters: {sorted(providers)}") from exc
+
+
+def fetch_prices_with_fallback(
+    providers: list[str], symbol: str | dict[str, str], start: str, end: str,
+) -> tuple[pd.DataFrame, str]:
+    """Fetch from the first provider, advancing only after an HTTP 429.
+
+    A malformed symbol, missing entitlement, or bad credential must not silently
+    move to a different source: those conditions need a user correction.  The
+    caller is responsible for using the provider-specific symbol convention
+    (for example, EODHD commonly uses ``AAPL.US`` rather than ``AAPL``).
+    """
+    if not providers:
+        raise ValueError("At least one provider is required")
+    for index, name in enumerate(providers):
+        try:
+            provider_symbol = symbol.get(name, symbol.get("default", "")) if isinstance(symbol, dict) else symbol
+            if not provider_symbol:
+                raise ValueError(f"No symbol supplied for provider {name!r}")
+            return provider_from_config(name).prices(provider_symbol, start, end), name
+        except HTTPError as exc:
+            if exc.code != 429 or index == len(providers) - 1:
+                raise
+    raise RuntimeError("No provider was attempted")  # defensive: loop always returns or raises

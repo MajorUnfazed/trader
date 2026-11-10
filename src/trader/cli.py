@@ -5,7 +5,7 @@ import pandas as pd
 
 from .config import load_config
 from .data import load_directory, download_yfinance, read_fx_csv, read_universe_membership_csv, read_fundamentals_csv
-from .providers import Provenance, import_price_csv, provider_from_config, write_dataset
+from .providers import Provenance, import_price_csv, fetch_prices_with_fallback, write_dataset
 from .backtest import run_backtest, benchmark_metrics
 from .research import walk_forward_backtest
 from .storage import connect, persist_result
@@ -36,8 +36,11 @@ def main():
     imp.add_argument("--adjustment-basis", default="provider_supplied")
 
     fetch = sub.add_parser("fetch-prices")
-    fetch.add_argument("--provider", choices=("tiingo", "eodhd"), required=True)
+    fetch.add_argument("--provider", choices=("tiingo", "eodhd"), help="One remote source (legacy form).")
+    fetch.add_argument("--providers", choices=("tiingo", "eodhd"), nargs="+", help="Ordered sources; advances only after HTTP 429.")
     fetch.add_argument("--symbol", required=True)
+    fetch.add_argument("--provider-symbol", action="append", default=[], metavar="PROVIDER=SYMBOL",
+                       help="Override a provider's symbol, repeatable (e.g. eodhd=AAPL.US).")
     fetch.add_argument("--start", required=True)
     fetch.add_argument("--end", required=True)
     fetch.add_argument("--output", required=True)
@@ -70,12 +73,22 @@ def main():
                          license_note=a.license_note, adjustment_basis=a.adjustment_basis), symbol=a.symbol)
         return
     if a.command == "fetch-prices":
-        provider = provider_from_config(a.provider)
+        if bool(a.provider) == bool(a.providers):
+            parser.error("fetch-prices requires exactly one of --provider or --providers")
+        selected = [a.provider] if a.provider else a.providers
+        symbols = {"default": a.symbol}
+        for entry in a.provider_symbol:
+            if "=" not in entry:
+                parser.error("--provider-symbol must be PROVIDER=SYMBOL")
+            provider_name, provider_symbol = entry.split("=", 1)
+            if provider_name not in selected or not provider_symbol:
+                parser.error("--provider-symbol must name a selected provider and a non-empty symbol")
+            symbols[provider_name] = provider_symbol
         try:
-            frame = provider.prices(a.symbol, a.start, a.end)
+            frame, used_provider = fetch_prices_with_fallback(selected, symbols, a.start, a.end)
         except RuntimeError as exc:
             parser.error(str(exc))
-        write_dataset(a.output, frame, Provenance.now(a.provider, source_url=f"provider API: {a.symbol}",
+        write_dataset(a.output, frame, Provenance.now(used_provider, source_url=f"provider API: {a.symbol}",
                       license_note="Confirm subscription, exchange entitlements, and redistribution rights before use."))
         return
 
