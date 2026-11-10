@@ -32,7 +32,12 @@ def read_price_csv(path: str | Path, symbol: str | None = None) -> pd.DataFrame:
     if df["split_factor"].isna().any() or (df["split_factor"] <= 0).any():
         raise ValueError(f"{path}: split_factor must be positive")
     if "dividend_payment_date" in df:
-        df["dividend_payment_date"] = pd.to_datetime(df["dividend_payment_date"], errors="coerce")
+        raw_payment_dates = df["dividend_payment_date"]
+        parsed_payment_dates = pd.to_datetime(raw_payment_dates, errors="coerce")
+        invalid_payment_dates = raw_payment_dates.notna() & raw_payment_dates.astype(str).str.strip().ne("") & parsed_payment_dates.isna()
+        if invalid_payment_dates.any():
+            raise ValueError(f"{path}: invalid dividend_payment_date values")
+        df["dividend_payment_date"] = parsed_payment_dates
     if "delisting_price" in df:
         df["delisting_price"] = pd.to_numeric(df["delisting_price"], errors="coerce")
         invalid = df["delisting_price"].notna() & (df["delisting_price"] <= 0)
