@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from trader.backtest import benchmark_metrics
+from trader.backtest import benchmark_metrics, run_backtest
 from trader.data import total_return_index
 from trader.research import walk_forward_backtest
 from trader.config import Config
@@ -9,11 +9,8 @@ from trader.config import Config
 
 def test_total_return_index_reinvests_dividend_and_applies_split():
     frame = pd.DataFrame(
-        {
-            "close": [100.0, 50.0, 51.0],
-            "dividend": [0.0, 1.0, 0.0],
-            "split_factor": [1.0, 2.0, 1.0],
-        },
+        {"close": [100.0, 50.0, 51.0], "dividend": [0.0, 1.0, 0.0],
+         "split_factor": [1.0, 2.0, 1.0]},
         index=pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
     )
     index = total_return_index(frame)
@@ -60,7 +57,31 @@ def test_walk_forward_creates_sequential_out_of_sample_folds():
 def test_walk_forward_rejects_insufficient_history():
     dates = pd.bdate_range("2023-01-01", periods=10)
     close = pd.Series(100.0, index=dates)
-    prices = {"A": pd.DataFrame({"open": close, "high": close, "low": close, "close": close, "adj_close": close, "volume": 1000, "dividend": 0}, index=dates)}
+    prices = {"A": pd.DataFrame({
+        "open": close, "high": close, "low": close, "close": close,
+        "adj_close": close, "volume": 1000, "dividend": 0,
+    }, index=dates)}
     with pytest.raises(ValueError, match="Insufficient history"):
         walk_forward_backtest(prices, pd.DataFrame(columns=["symbol", "as_of_date"]), Config(),
                               train_days=365, test_days=100, validate_calendars=False)
+
+
+def test_backtest_cash_settles_explicit_delisting_price():
+    dates = pd.date_range("2024-01-02", periods=3, freq="B")
+    close = pd.Series([100.0, 100.0, 100.0], index=dates)
+    prices = {"ABC": pd.DataFrame({
+        "open": close, "high": close, "low": close, "close": close,
+        "adj_close": close, "volume": 100_000, "dividend": 0.0,
+        "delisting_price": [float("nan"), float("nan"), 20.0],
+    }, index=dates)}
+    fundamentals = pd.DataFrame([{
+        "symbol": "ABC", "as_of_date": "2024-01-01", "dividend_yield": 0.03,
+        "payout_ratio": 0.5, "fcf_positive": True, "debt_to_equity": 0.2,
+        "dividend_growth_5y": 0.0, "sector": "Test", "currency": "INR",
+    }])
+    result = run_backtest(prices, fundamentals, Config(), str(dates[0].date()),
+                          str(dates[-1].date()), validate_calendars=False, rebalance_days=1)
+    assert "ABC" not in result.portfolio.positions
+    settlements = [fill for fill in result.portfolio.fills if fill.reason == "Cash delisting settlement"]
+    assert len(settlements) == 1
+    assert settlements[0].price_native == 20.0

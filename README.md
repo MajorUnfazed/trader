@@ -27,12 +27,12 @@ pytest -q
 Use a **survivorship-aware** source where possible (for example NSE/BSE licensed data, CRSP/Compustat, Refinitiv, FactSet, or a provider with point-in-time constituents/fundamentals). The built-in CSV reader expects one file per symbol in `data/raw/`:
 
 ```csv
-date,open,high,low,close,adj_close,volume,dividend,split_factor,dividend_payment_date
+date,open,high,low,close,adj_close,volume,dividend,split_factor,dividend_payment_date,delisting_price
 2023-01-02,100,101,99,100,100,100000,0,1,
 2023-03-15,105,106,104,105,105,80000,1.2,1,2023-04-10
 ```
 
-`close` is the native-currency tradable close; `adj_close` must be vendor-adjusted for splits and dividends and is used only for indicators. `split_factor` is new shares per old share on that date (normally `1`). Dividend rows should include the actual `dividend_payment_date`; without it, legacy files are paid on the ex-date and overstate cash availability. Add fundamentals in `data/fundamentals.csv` with `symbol,as_of_date,dividend_yield,payout_ratio,fcf_positive,debt_to_equity,revenue_growth,earnings_growth,dividend_growth_5y,sector,currency,exchange`. `as_of_date` must be when the information was publicly available—not its fiscal period end—to prevent look-ahead bias. Multiple snapshots per symbol are supported; only the latest snapshot dated on or before each decision is used.
+`close` is the native-currency tradable close; `adj_close` must be vendor-adjusted for splits and dividends and is used only for indicators. `split_factor` is new shares per old share on that date (normally `1`). The optional `delisting_price` column records explicit cash settlement per share on the final event row; the backtest cash-settles an open holding at that value and cancels pending orders. It must be sourced from an exchange/company settlement notice or a reliable vendor—do not fabricate it. Without a verified settlement value, a delisted holding cannot be valued reliably and should be flagged for manual resolution. Dividend rows should include the actual `dividend_payment_date`; without it, legacy files are paid on the ex-date and overstate cash availability. Add fundamentals in `data/fundamentals.csv` with `symbol,as_of_date,dividend_yield,payout_ratio,fcf_positive,debt_to_equity,revenue_growth,earnings_growth,dividend_growth_5y,sector,currency,exchange`. `as_of_date` must be when the information was publicly available—not its fiscal period end—to prevent look-ahead bias. Multiple snapshots per symbol are supported; only the latest snapshot dated on or before each decision is used.
 
 Instrument-specific halts should be represented by an exchange-session row with `tradable=false` and `volume=0`; carry the last known OHLC/adjusted-close values in that row. Halted rows remain in the calendar history but are excluded from marks, momentum indicators, and executions. Missing rows inside an instrument's active history are still rejected, so a halt must not be silently represented as a missing quote. The optional `tradable` CSV field accepts `true/false`, `1/0`, or `yes/no`.
 
@@ -48,7 +48,7 @@ Run a transparent backtest (only after supplying real files):
 python -m trader.cli backtest --data-dir data/raw --fundamentals data/fundamentals.csv --universe-membership data/universe_membership.csv --start 2020-01-01 --end 2024-12-31 --fx-file data/usdinr.csv
 ```
 
-This prints metrics calculated from the supplied data; it ships with **no invented market data or results**. To compare benchmarks, ingest `^NSEI.csv` and `^GSPC.csv` in the same format and pass `--benchmarks ^NSEI ^GSPC`.
+This prints metrics calculated from the supplied data; it ships with **no invented market data or results**. To compare benchmarks, ingest `^NSEI.csv` and `^GSPC.csv` in the same format and pass `--benchmarks ^NSEI ^GSPC`. Benchmark reports prefer a provider-supplied `total_return_index`; otherwise they calculate a transparent split/dividend-reinvestment proxy from `close`, `dividend`, and `split_factor`. The proxy assumes reinvestment at ex-date close and does not model dividend tax or withholding. `adj_close` is only a fallback proxy and is labelled as such.
 
 Optional prototype download (check Yahoo terms, exchange coverage, corporate-action accuracy, rate limits, and licensing before use):
 
@@ -58,7 +58,7 @@ python -m trader.cli download --symbols RELIANCE.NS TCS.NS AAPL MSFT --start 202
 
 `yfinance` is not a production data contract. It may have gaps, changed symbols, adjusted-price conventions, and rate limits. Production deployment requires a licensed provider and point-in-time corporate actions, FX, fundamentals, and constituent histories.
 
-## Paper operation
+## Walk-forward research\n\nRun sequential out-of-sample windows after a historical warm-up period:\n\n```powershell\npython -m trader.cli walk-forward --data-dir data/raw --fundamentals data/fundamentals.csv --universe-membership data/universe_membership.csv --start 2015-01-01 --end 2024-12-31 --train-days 1095 --test-days 365 --step-days 365 --fx-file data/usdinr.csv\n```\n\nWindow lengths are calendar days. The current strategies are fixed rules, so the training window is used for historical warm-up/research, not parameter fitting. Every test fold is reported; compare the full sequence with matched total-return benchmarks rather than choosing the best fold. The report includes mean and median CAGR, return, drawdown, Sharpe, Sortino, and volatility.\n\n## Paper operation
 
 The `paper-run` command is stateful. It restores SQLite portfolio state, processes only dates later than its last completed session, executes previously pending orders on the next available session open for that symbol, and records new pending orders after the latest close. Re-running unchanged data is idempotent and produces no duplicate trades. Schedule it once after data for the relevant exchanges is complete.
 
@@ -72,7 +72,7 @@ The initial target sleeves are 30% dividend quality, 20% dividend growth, 30% gr
 
 ## Automated tests
 
-GitHub Actions runs `python -m pytest -q` on pushes and pull requests to `main`. The regression suite covers zero/partial sells, dividend entitlement and payment accounting, FX revaluation, persistence, exchange-session execution, market-halt handling, point-in-time fundamentals, and historical constituent membership. A green test suite is necessary but not sufficient evidence of strategy profitability or production readiness.
+GitHub Actions runs `python -m pytest -q` on pushes and pull requests to `main`. The regression suite covers zero/partial sells, dividend entitlement and payment accounting, FX revaluation, persistence, exchange-session execution, market-halt handling, point-in-time fundamentals, historical constituent membership, delisting settlement, total-return calculations, and walk-forward fold boundaries. A green test suite is necessary but not sufficient evidence of strategy profitability or production readiness.
 
 ## Architecture
 
