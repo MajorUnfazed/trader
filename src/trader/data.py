@@ -39,10 +39,13 @@ def read_price_csv(path: str | Path, symbol: str | None = None) -> pd.DataFrame:
             raise ValueError(f"{path}: invalid dividend_payment_date values")
         df["dividend_payment_date"] = parsed_payment_dates
     if "delisting_price" in df:
-        df["delisting_price"] = pd.to_numeric(df["delisting_price"], errors="coerce")
-        invalid = df["delisting_price"].notna() & (df["delisting_price"] <= 0)
-        if invalid.any():
-            raise ValueError(f"{path}: delisting_price must be positive when supplied")
+        raw_delisting_prices = df["delisting_price"]
+        parsed_delisting_prices = pd.to_numeric(raw_delisting_prices, errors="coerce")
+        invalid_text = raw_delisting_prices.notna() & raw_delisting_prices.astype(str).str.strip().ne("") & parsed_delisting_prices.isna()
+        invalid_value = parsed_delisting_prices.notna() & (parsed_delisting_prices <= 0)
+        if invalid_text.any() or invalid_value.any():
+            raise ValueError(f"{path}: delisting_price must be a positive number when supplied")
+        df["delisting_price"] = parsed_delisting_prices
     if "tradable" in df:
         values = df["tradable"].astype(str).str.strip().str.lower()
         mapping = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}

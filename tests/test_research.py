@@ -171,3 +171,22 @@ def test_data_audit_flags_missing_survivorship_and_fx_inputs():
     assert any("survivorship" in warning for warning in report["warnings"])
     assert any("static FX" in warning for warning in report["warnings"])
     assert report["coverage"]["US"]["rows"] == 2
+
+from trader.data import read_price_csv
+
+
+@pytest.mark.parametrize("extra_column,extra_value,error", [
+    ("dividend_payment_date", "not-a-date", "dividend_payment_date"),
+    ("delisting_price", "not-a-price", "delisting_price"),
+    ("delisting_price", "0", "delisting_price"),
+])
+def test_price_csv_rejects_malformed_corporate_action_fields(tmp_path, extra_column, extra_value, error):
+    row = {
+        "date": "2024-01-02", "open": 100, "high": 101, "low": 99,
+        "close": 100, "adj_close": 100, "volume": 1000, "dividend": 1,
+        extra_column: extra_value,
+    }
+    path = tmp_path / "ABC.csv"
+    pd.DataFrame([row]).to_csv(path, index=False)
+    with pytest.raises(ValueError, match=error):
+        read_price_csv(path)
