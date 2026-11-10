@@ -50,7 +50,7 @@ Run a transparent backtest (only after supplying real files):
 python -m trader.cli backtest --data-dir data/raw --fundamentals data/fundamentals.csv --universe-membership data/universe_membership.csv --start 2020-01-01 --end 2024-12-31 --fx-file data/usdinr.csv
 ```
 
-This prints metrics calculated from the supplied data; it ships with **no invented market data or results**. To compare benchmarks, ingest `^NSEI.csv` and `^GSPC.csv` in the same format and pass `--benchmarks ^NSEI ^GSPC`. Benchmark reports prefer a provider-supplied `total_return_index`; otherwise they calculate a transparent split/dividend-reinvestment proxy from `close`, `dividend`, and `split_factor`. The proxy assumes reinvestment at ex-date close and does not model dividend tax or withholding. `adj_close` is only a fallback proxy and is labelled as such.
+This prints metrics calculated from the supplied data; it ships with **no invented market data or results**. To compare benchmarks, ingest `^NSEI.csv` and `^GSPC.csv` in the same format and pass `--benchmarks ^NSEI ^GSPC`. Benchmark reports prefer a provider-supplied `total_return_index`; otherwise they calculate a transparent split/dividend-reinvestment proxy from `close`, `dividend`, and `split_factor`. The proxy assumes reinvestment at ex-date close and does not model dividend tax or withholding. `adj_close` is only a fallback proxy and is labelled as such. Add a `currency` column to benchmark CSVs when they are not INR; USD benchmarks are converted to INR only when the daily `--fx-file` is supplied, otherwise they are explicitly labelled unconverted.
 
 Optional prototype download (check Yahoo terms, exchange coverage, corporate-action accuracy, rate limits, and licensing before use):
 

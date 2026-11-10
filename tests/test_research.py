@@ -140,3 +140,15 @@ def test_backtest_can_isolate_one_strategy_sleeve():
     assert result.metrics()["strategy"] == "dividend_quality"
     assert any(signal.strategy == "dividend_quality" for signal in result.decisions)
     assert all(signal.strategy == "dividend_quality" for signal in result.decisions)
+
+def test_us_benchmark_is_converted_to_inr_with_daily_fx():
+    dates = pd.date_range("2024-01-01", periods=3)
+    frame = pd.DataFrame({
+        "close": [100.0, 110.0, 110.0], "dividend": [0.0, 0.0, 0.0],
+        "split_factor": [1.0, 1.0, 1.0],
+    }, index=dates)
+    fx = pd.Series([80.0, 90.0, 90.0], index=dates)
+    report = benchmark_metrics(frame, "2024-01-01", "2024-01-03", usd_inr=fx, currency="USD")
+    assert report["total_return"] == pytest.approx(0.2375)
+    assert report["fx_adjusted_to_inr"] is True
+    assert report["currency"] == "INR"

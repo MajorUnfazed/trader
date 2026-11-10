@@ -53,7 +53,7 @@ class BacktestResult:
         }
 
 
-def benchmark_metrics(df: pd.DataFrame, start: str, end: str) -> dict:
+def benchmark_metrics(df: pd.DataFrame, start: str, end: str, usd_inr: pd.Series | None = None, currency: str = "INR") -> dict:
     """Dividend-inclusive benchmark metrics where source fields permit it.
 
     Uses an explicit total_return_index if provided, otherwise constructs a
@@ -74,6 +74,13 @@ def benchmark_metrics(df: pd.DataFrame, start: str, end: str) -> dict:
         basis = "vendor_adjusted_close_proxy"
     if len(h) < 2 or h.isna().any() or (h <= 0).any():
         raise ValueError("Benchmark requires at least two valid positive total-return observations")
+    fx_adjusted = False
+    if currency.upper() == "USD" and usd_inr is not None:
+        rates = usd_inr.sort_index().astype(float).reindex(h.index, method="ffill")
+        if rates.isna().any() or (rates <= 0).any():
+            raise ValueError("USD benchmark FX history must begin on or before the benchmark period")
+        h = h * rates
+        fx_adjusted = True
     r = h.pct_change().dropna()
     years = max((h.index[-1] - h.index[0]).days / 365.25, 1 / 365.25)
     total = h.iloc[-1] / h.iloc[0] - 1
@@ -86,6 +93,8 @@ def benchmark_metrics(df: pd.DataFrame, start: str, end: str) -> dict:
         "volatility": float(r.std() * np.sqrt(252)) if len(r) > 1 else 0.0,
         "sharpe": float(r.mean() / r.std() * np.sqrt(252)) if len(r) > 1 and r.std() else 0.0,
         "return_basis": basis,
+        "currency": "INR" if currency.upper() != "USD" or fx_adjusted else "USD",
+        "fx_adjusted_to_inr": fx_adjusted,
     }
 
 

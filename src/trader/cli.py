@@ -80,7 +80,12 @@ def main():
     persist_result(result, connect(a.database))
     report = result.metrics()
     report["benchmarks"] = {
-        symbol: benchmark_metrics(frame, first, last)
+        symbol: benchmark_metrics(
+            frame, first, last, usd_inr=fx,
+            currency=(str(frame["currency"].dropna().iloc[0]).upper()
+                      if "currency" in frame and frame["currency"].notna().any()
+                      else ("USD" if symbol.upper() in {"^GSPC", "SPY", "VOO"} else "INR")),
+        )
         for symbol, frame in benchmark_data.items()
     }
     print(json.dumps(report, indent=2))
