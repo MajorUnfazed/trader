@@ -1,4 +1,5 @@
 """Stateful, idempotent paper execution; never connects to a broker."""
+from dataclasses import replace
 import pandas as pd
 from .portfolio import Portfolio
 from .strategies import dividend_quality, dividend_growth, long_term_growth, target_weights, fundamentals_as_of
@@ -81,7 +82,7 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
             connection.execute("UPDATE orders SET status='CANCELLED' WHERE symbol=? AND status='PENDING'", (symbol,))
             if symbol in p.positions:
                 reason = "Cash delisting settlement"
-                fill = p.sell(symbol, float(settlement), cfg.execution, day.date(), reason, usd_inr=fx, volume=None)
+                fill = p.sell(symbol, float(settlement), replace(cfg.execution, slippage_bps=0), day.date(), reason, usd_inr=fx, volume=None)
                 if fill:
                     cursor = connection.execute(
                         "INSERT INTO orders(created_date,symbol,side,target_weight,reason,status,filled_date) VALUES(?,?, 'SELL',0,?,'FILLED',?)",

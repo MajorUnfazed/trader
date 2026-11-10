@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import numpy as np
 import pandas as pd
 from .config import Config
@@ -159,7 +159,7 @@ def run_backtest(
                     if float(settlement) <= 0:
                         raise ValueError(f"Invalid delisting settlement for {symbol} on {day.date()}")
                     if symbol in p.positions:
-                        p.sell(symbol, float(settlement), cfg.execution, day.date(),
+                        p.sell(symbol, float(settlement), replace(cfg.execution, slippage_bps=0), day.date(),
                                "Cash delisting settlement", usd_inr=fx, volume=None)
                     pending.pop(symbol, None)
 
