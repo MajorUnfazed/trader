@@ -36,6 +36,8 @@ class DividendReceivable:
     net_native: float | None = None
     gross_native: float | None = None
     tax_native: float | None = None
+    actual_paid_inr: float | None = None
+    paid_at: str | None = None
 
     def __post_init__(self):
         # Legacy persisted receivables were INR-denominated.
@@ -158,6 +160,7 @@ class Portfolio:
         self.dividend_receivables = [x for x in self.dividend_receivables if x.payment_date > when]
         for event in due:
             paid_inr = float(event.net_native) * self.fx(event.currency, usd_inr)
+            event.actual_paid_inr = paid_inr
             self.cash_inr += paid_inr
             self.dividend_income_inr += paid_inr
         return due

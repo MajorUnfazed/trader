@@ -1,15 +1,13 @@
 import argparse
 import json
-from pathlib import Path
 from urllib.error import HTTPError
-import pandas as pd
 
 from .config import load_config
 from .data import load_directory, download_yfinance, read_fx_csv, read_universe_membership_csv, read_fundamentals_csv
 from .providers import Provenance, import_price_csv, fetch_prices_with_fallback, write_dataset
 from .backtest import run_backtest, benchmark_metrics
 from .research import walk_forward_backtest
-from .storage import connect, persist_result
+from .storage import connect, persist_result, open_db
 from .paper import run_paper
 from .audit import audit_data
 
@@ -110,7 +108,8 @@ def main():
     f = fundamentals(a.fundamentals)
 
     if a.command == "paper-run":
-        report = run_paper(prices, f, cfg, connect(a.database), a.end, fx)
+        with open_db(a.database) as db:
+            report = run_paper(prices, f, cfg, db, a.end, fx)
         print(json.dumps({"processed_sessions": report["processed"], "cash_inr": report["portfolio"].cash_inr, "positions": len(report["portfolio"].positions)}, indent=2))
         return
 

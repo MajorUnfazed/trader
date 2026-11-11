@@ -96,6 +96,54 @@ streamlit run src/trader/dashboard.py
 
 The initial target sleeves are 30% dividend quality, 20% dividend growth, 30% growth, and 20% cash. Each sleeve is independently ranked, then capped by the configured per-position limit; overlapping signals cannot exceed that cap and any unusable sleeve budget remains cash. Purchases are capped by per-position and sector limits. The paper engine creates a controlled next-session reduction order when a position or sector breaches a limit by more than the rebalance threshold. Pending dividend receivables are included in portfolio equity; foreign-currency receivables are revalued using the supplied daily FX rate and converted to INR when paid. An empty signal set does not liquidate the paper portfolio.
 
+### Paper Execution Lifecycle & Persistence Hardening
+
+Trader includes a deterministic, restart-safe, auditable paper-execution and persistence engine:
+
+#### 1. Explicit Order Lifecycle
+Orders progress through validated states:
+- `PENDING`: Queued for execution on the symbol's next open exchange session.
+- `FILLED`: Fully executed at the session open price (adjusted for slippage and transaction costs).
+- `CANCELLED`: Cancelled due to rebalancing updates, security delisting, target already reached, or zombie disqualification.
+- `EXPIRED`: Time-in-force elapsed without full execution (end of DAY session or GTC trading day limit).
+- `REJECTED`: Invalid order intent (e.g. attempting to sell a security with no position).
+
+Stored order fields in SQLite: `id`, `run_id`, `created_date`, `symbol`, `side` (`BUY`/`SELL`), `order_type` (`MARKET`/`LIMIT`), `target_weight`, `requested_quantity`, `filled_quantity`, `limit_price`, `reference_price`, `execution_price`, `fee_inr`, `time_in_force` (`DAY`/`GTC`), `reason`, `status`, `cancellation_reason`, `rejection_reason`, `created_at`, `filled_date`, and `updated_at`.
+
+#### 2. Pending Orders, Expiration, and Multi-Exchange Awareness
+- **Restart Survival**: Unfilled pending orders are persisted to SQLite and survive process restarts and market closures.
+- **Exchange Calendar Isolation**: Orders are strictly evaluated against the primary exchange calendar of the security (e.g., NSE for Indian equities, NYSE for US equities). When one exchange is closed for a holiday (such as Martin Luther King Jr. Day for NYSE while NSE is open), pending orders for that exchange remain safely pending and neither execute nor expire prematurely.
+- **DAY vs. GTC Expiration**:
+  - `DAY`: Valid only for the single trading session of the security's exchange. If unfilled by session close, transitions to `EXPIRED`.
+  - `GTC`: Tracks active **exchange trading days** (not calendar days), expiring after `gtc_expiration_trading_days` (default `5` trading sessions). This prevents premature expiration over long weekend or holiday closures.
+- **Zombie Order Cancellation**: If an unfilled pending BUY order exists for a symbol that no longer qualifies for strategy targets during a rebalancing run, it is immediately transitioned to `CANCELLED` (`Disqualified: symbol no longer in strategy targets`), preventing delayed ghost execution.
+- **Partial Fills**: Configurable via `paper.allow_partial_fills` (default `false` preserving the conservative all-or-none volume participation gate). When enabled, orders execute up to `max_volume_participation`, record incremental fills in `fills`, update `filled_quantity`, and expire or roll over remaining shares according to TIF rules.
+
+#### 3. Dividend Idempotency & Delisting Settlements
+- **Dividend Entitlement & Payment Idempotency**: Protected by unique business constraints (`UNIQUE(symbol, ex_date, payment_date)`). Re-running a paper session will never duplicate dividend declarations or cash credits. Payout queries avoid float-equality hazards and record exact currency conversion in `actual_paid_inr`.
+- **Zero-Value Delisting & Bankruptcy Settlement**: Delistings support explicit zero considerations (`delisting_price = 0.0`) for bankruptcies and total write-offs without crashing. Pending orders are cancelled, open holdings are removed, and realized capital losses are recorded.
+
+#### 4. Database Integrity, Crash Recovery, and Migrations
+- **SQLite Engine Pragmas**: All connections enforce foreign key integrity (`PRAGMA foreign_keys = ON;`), WAL journal mode (`PRAGMA journal_mode = WAL;`), and busy timeouts (`PRAGMA busy_timeout = 5000;`).
+- **Connection Lifecycle Management**: Managed via the `open_db()` context manager, guaranteeing that SQLite connections and file locks are released cleanly, preventing Windows handle lock issues.
+- **Crash Recovery**: If an execution run is abruptly terminated while in `RUNNING` status, subsequent runs automatically mark the orphaned session as `FAILED` (`Interrupted: process terminated unexpectedly`). Uncommitted financial mutations are safely rolled back by SQLite transactions.
+- **Durable Failure Records**: Execution transactions are isolated from session audit records; unhandled runtime exceptions roll back financial state while durably logging `status='FAILED'` and the exact error diagnostics in `paper_sessions`.
+- **Versioned Migrations**: Managed via `PRAGMA user_version`. Existing databases automatically migrate to the hardened schema with new columns, tables, and performance indexes while fully preserving historical orders, fills, snapshots, and receivables.
+
+#### 5. Session Auditability
+Every paper run logs a dedicated record in `paper_sessions`:
+- Unique `run_id` (UUID).
+- Session date, start, and completion timestamps.
+- Configuration hash (`config_hash`).
+- Starting and ending cash balances, total portfolio NAV, realised PnL, and dividend income.
+- Order execution counts: `orders_created`, `orders_filled`, `orders_cancelled`, `orders_expired`, and `orders_rejected`.
+- Session status (`RUNNING`, `SUCCESS`, `FAILED`) and error diagnostics.
+
+Previous sessions can be inspected directly via SQLite:
+```powershell
+sqlite3 data/trader.db "SELECT run_id, session_date, status, ending_cash_inr, portfolio_value_inr, orders_filled FROM paper_sessions ORDER BY id DESC LIMIT 5;"
+```
+
 ## Automated tests
 
 GitHub Actions runs `python -m pytest -q` on pushes and pull requests to `main`. The regression suite covers zero/partial sells, dividend entitlement and payment accounting, FX revaluation, persistence, exchange-session execution, market-halt handling, point-in-time fundamentals, historical constituent membership, delisting settlement, total-return calculations, and walk-forward fold boundaries. A green test suite is necessary but not sufficient evidence of strategy profitability or production readiness.

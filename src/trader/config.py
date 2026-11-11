@@ -28,6 +28,14 @@ class DataSourceConfig:
     fx: str = "csv"
 
 @dataclass
+class PaperConfig:
+    order_expiration_days: int = 1
+    default_time_in_force: str = "DAY"
+    allow_partial_fills: bool = False
+    allow_zero_delisting: bool = True
+    gtc_expiration_trading_days: int = 5
+
+@dataclass
 class Config:
     base_currency: str = "INR"
     initial_capital_inr: float = 100_000
@@ -35,17 +43,33 @@ class Config:
     risk: RiskConfig = field(default_factory=RiskConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     data_sources: DataSourceConfig = field(default_factory=DataSourceConfig)
+    paper: PaperConfig = field(default_factory=PaperConfig)
     def __post_init__(self):
         if not 0 < self.execution.max_volume_participation <= 1:
             raise ValueError('max_volume_participation must be in (0, 1]')
         if min(self.execution.india_cost_bps, self.execution.us_cost_bps, self.execution.slippage_bps) < 0:
             raise ValueError('execution costs and slippage cannot be negative')
-        total=sum(float(v) for v in self.allocations.values())
-        if abs(total-1.0) > 1e-9: raise ValueError(f"allocations must sum to 1.0, got {total}")
-        if self.allocations.get("cash_reserve",0) < self.risk.min_cash_weight: raise ValueError("cash_reserve must be at least min_cash_weight")
+        total = sum(float(v) for v in self.allocations.values())
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError(f"allocations must sum to 1.0, got {total}")
+        if self.allocations.get("cash_reserve", 0) < self.risk.min_cash_weight:
+            raise ValueError("cash_reserve must be at least min_cash_weight")
+        if self.paper.default_time_in_force not in ("DAY", "GTC"):
+            raise ValueError(f"default_time_in_force must be 'DAY' or 'GTC', got {self.paper.default_time_in_force}")
+        if self.paper.gtc_expiration_trading_days <= 0:
+            raise ValueError(f"gtc_expiration_trading_days must be positive, got {self.paper.gtc_expiration_trading_days}")
+        if self.paper.order_expiration_days <= 0:
+            raise ValueError(f"order_expiration_days must be positive, got {self.paper.order_expiration_days}")
 
 def load_config(path: str = "config.yml") -> Config:
     p = Path(path)
-    if not p.exists(): return Config()
+    if not p.exists():
+        return Config()
     raw = yaml.safe_load(p.read_text()) or {}
-    return Config(**{**raw, "risk": RiskConfig(**raw.get("risk", {})), "execution": ExecutionConfig(**raw.get("execution", {})), "data_sources": DataSourceConfig(**raw.get("data_sources", {}))})
+    return Config(**{
+        **raw,
+        "risk": RiskConfig(**raw.get("risk", {})),
+        "execution": ExecutionConfig(**raw.get("execution", {})),
+        "data_sources": DataSourceConfig(**raw.get("data_sources", {})),
+        "paper": PaperConfig(**raw.get("paper", {})),
+    })
