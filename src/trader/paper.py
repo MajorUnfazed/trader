@@ -17,7 +17,7 @@ from .calendars import valid_sessions
 from .risk import drift_targets, quantity_to_target
 
 
-def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, validate_calendars=True):
+def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, validate_calendars=True, corporate_actions=None):
     recover_interrupted_sessions(connection)
 
     requested_end = pd.Timestamp(as_of) if as_of else max(x.index.max() for x in prices.values())
@@ -79,6 +79,33 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
                     if day in frame.index:
                         p.apply_split(symbol, float(frame.loc[day, "split_factor"]) if "split_factor" in frame else 1)
 
+                # Process structured corporate actions if provided
+                if corporate_actions is not None and not corporate_actions.empty:
+                    day_actions = corporate_actions[corporate_actions["date"] == day]
+                    for _, ca in day_actions.iterrows():
+                        act_type = str(ca["action_type"]).upper()
+                        ca_sym = str(ca["symbol"])
+                        if act_type == "STOCK_MERGER":
+                            target_sym = str(ca.get("target_symbol", ""))
+                            ratio = float(ca.get("ratio", 1.0))
+                            if ca_sym in p.positions and target_sym:
+                                p.apply_merger(ca_sym, target_sym, ratio, day.date(),
+                                               acquirer_currency=currencies.get(target_sym, "INR"))
+                        elif act_type == "WORTHLESS_LIQUIDATION":
+                            if ca_sym in p.positions:
+                                p.sell(ca_sym, 0.0, replace(cfg.execution, slippage_bps=0), day.date(), "Worthless liquidation", usd_inr=fx, volume=None)
+                        elif act_type == "CASH_DELISTING":
+                            cash_amt = float(ca.get("cash_amount", 0.0))
+                            if ca_sym in p.positions:
+                                p.sell(ca_sym, cash_amt, replace(cfg.execution, slippage_bps=0), day.date(), "Cash delisting", usd_inr=fx, volume=None)
+
+                # Quarantine orphaned securities that permanently stopped trading without delisting
+                for sym, pos in list(p.positions.items()):
+                    if is_symbol_session_open(sym, day) and sym not in open_quotes:
+                        future_dates = [d for d in (calendar_days[sym] if calendar_days and sym in calendar_days else prices.get(sym, pd.DataFrame()).index) if d >= day]
+                        if not future_dates or all(d not in prices.get(sym, pd.DataFrame()).index for d in future_dates):
+                            pos.is_quarantined = True
+
                 # Settle due dividends
                 paid = p.pay_dividends(day.date(), fx)
                 for event in paid:
@@ -131,7 +158,7 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
 
                     if symbol in p.positions:
                         reason = "Cash delisting settlement"
-                        fill = p.sell(symbol, settlement_val, replace(cfg.execution, slippage_bps=0), day.date(), reason, usd_inr=fx, volume=None)
+                        fill = p.sell(symbol, settlement_val, replace(cfg.execution, slippage_bps=0), day.date(), reason, usd_inr=fx, volume=None, tax_cfg=getattr(cfg, "tax", None))
                         if fill:
                             cursor = connection.execute(
                                 """INSERT INTO orders(run_id, created_date, symbol, side, order_type, target_weight, requested_quantity, filled_quantity, execution_price, reason, status, filled_date)
@@ -149,11 +176,11 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
                 # Execute prior-close orders only on the symbol's next actual session
                 pending_orders = connection.execute(
                     """SELECT id, symbol, side, target_weight, requested_quantity, filled_quantity,
-                              order_type, time_in_force, reason, created_date
+                              order_type, time_in_force, reason, created_date, limit_price
                        FROM orders WHERE status='PENDING'"""
                 ).fetchall()
 
-                for oid, symbol, side, target, req_qty, filled_qty, ord_type, tif, reason, created_date in pending_orders:
+                for oid, symbol, side, target, req_qty, filled_qty, ord_type, tif, reason, created_date, limit_px in pending_orders:
                     if pd.Timestamp(created_date).date() >= day.date():
                         continue
 
@@ -181,9 +208,31 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
 
                     row = prices[symbol].loc[day]
                     op = float(row["open"])
+                    low_px = float(row["low"]) if "low" in row else op
+                    high_px = float(row["high"]) if "high" in row else op
                     volume = float(row["volume"]) if "volume" in row else None
                     total = p.value(open_quotes, currencies, fx)
                     fill = None
+
+                    # Limit price checks
+                    if ord_type == "LIMIT" and limit_px is not None:
+                        if side == "BUY" and low_px > limit_px:
+                            continue
+                        if side == "SELL" and high_px < limit_px:
+                            continue
+                        exec_px = min(op, float(limit_px)) if side == "BUY" else max(op, float(limit_px))
+                    else:
+                        exec_px = op
+
+                    # Volatility / volume-scaled slippage
+                    exec_cfg = cfg.execution
+                    if getattr(exec_cfg, "use_volatility_slippage", False) and volume and volume > 0:
+                        est_shares = req_qty or 100
+                        vol_ratio = math.sqrt(min(1.0, est_shares / volume))
+                        scaled_slip = exec_cfg.slippage_bps * (1.0 + vol_ratio)
+                        exec_cfg = replace(exec_cfg, slippage_bps=scaled_slip)
+
+                    tax_cfg = getattr(cfg, "tax", None)
 
                     if side == "SELL":
                         position = p.positions.get(symbol)
@@ -194,7 +243,7 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
                             )
                             orders_rejected += 1
                             continue
-                        qty = quantity_to_target(position, op, p.fx(position.currency, fx), total, target) if position and target is not None else (req_qty - filled_qty if req_qty else None)
+                        qty = quantity_to_target(position, exec_px, p.fx(position.currency, fx), total, target) if position and target is not None else (req_qty - filled_qty if req_qty else None)
                         if qty is not None and qty <= 0:
                             connection.execute(
                                 "UPDATE orders SET status='CANCELLED', cancellation_reason='Target position already reached' WHERE id=?",
@@ -203,20 +252,20 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
                             orders_cancelled += 1
                             continue
 
-                        max_qty = math.floor(max(0.0, float(volume)) * cfg.execution.max_volume_participation) if volume is not None else None
+                        max_qty = math.floor(max(0.0, float(volume)) * exec_cfg.max_volume_participation) if volume is not None else None
                         if max_qty is not None and max_qty < 1:
                             fill = None
                         elif max_qty is not None and qty is not None and qty > max_qty:
                             if getattr(cfg.paper, "allow_partial_fills", False) and max_qty > 0:
-                                fill = p.sell(symbol, op, cfg.execution, day.date(), reason, quantity=max_qty, usd_inr=fx, volume=None)
+                                fill = p.sell(symbol, exec_px, exec_cfg, day.date(), reason, quantity=max_qty, usd_inr=fx, volume=None, tax_cfg=tax_cfg)
                             else:
                                 fill = None
                         else:
-                            fill = p.sell(symbol, op, cfg.execution, day.date(), reason, quantity=qty, usd_inr=fx, volume=None)
+                            fill = p.sell(symbol, exec_px, exec_cfg, day.date(), reason, quantity=qty, usd_inr=fx, volume=None, tax_cfg=tax_cfg)
 
                     else: # BUY
                         current = p.positions.get(symbol)
-                        current_value = current.quantity * op * p.fx(currencies[symbol], fx) if current else 0
+                        current_value = current.quantity * exec_px * p.fx(currencies[symbol], fx) if current else 0
                         sector = str(metadata.loc[symbol].get("sector", "Unknown"))
                         sector_value = sum(
                             pos.quantity * p.last_prices.get(sym, pos.avg_cost_native)
@@ -229,24 +278,24 @@ def run_paper(prices, fundamentals, cfg, connection, as_of=None, usd_inr=None, v
                             fill = None
                         else:
                             fx_rate = p.fx(currencies[symbol], fx)
-                            px = op * (1 + cfg.execution.slippage_bps / 10000)
-                            rate = (cfg.execution.us_cost_bps if currencies[symbol].upper() == "USD" else cfg.execution.india_cost_bps) / 10000
+                            px = exec_px * (1 + exec_cfg.slippage_bps / 10000)
+                            rate = (exec_cfg.us_cost_bps if currencies[symbol].upper() == "USD" else exec_cfg.india_cost_bps) / 10000
                             cost_per_share = px * fx_rate * (1 + rate)
                             needed_shares = math.floor(budget / cost_per_share) if cost_per_share > 0 else 0
                             if needed_shares < 1:
                                 fill = None
                             else:
-                                max_qty = math.floor(max(0.0, float(volume)) * cfg.execution.max_volume_participation) if volume is not None else None
+                                max_qty = math.floor(max(0.0, float(volume)) * exec_cfg.max_volume_participation) if volume is not None else None
                                 if max_qty is not None and max_qty < 1:
                                     fill = None
                                 elif max_qty is not None and needed_shares > max_qty:
                                     if getattr(cfg.paper, "allow_partial_fills", False) and max_qty > 0:
                                         partial_budget = max_qty * cost_per_share
-                                        fill = p.buy(symbol, op, currencies[symbol], sector, partial_budget, cfg.execution, day.date(), reason, fx, volume=None)
+                                        fill = p.buy(symbol, exec_px, currencies[symbol], sector, partial_budget, exec_cfg, day.date(), reason, fx, volume=None)
                                     else:
                                         fill = None
                                 else:
-                                    fill = p.buy(symbol, op, currencies[symbol], sector, budget, cfg.execution, day.date(), reason, fx, volume=None)
+                                    fill = p.buy(symbol, exec_px, currencies[symbol], sector, budget, exec_cfg, day.date(), reason, fx, volume=None)
 
                     if fill:
                         new_filled_qty = (filled_qty or 0) + fill.quantity

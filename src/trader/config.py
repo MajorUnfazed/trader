@@ -18,6 +18,17 @@ class ExecutionConfig:
     india_capital_gains_tax_rate: float = .10
     us_withholding_tax_rate: float = .25
     usd_inr: float = 83.0
+    use_volatility_slippage: bool = False
+
+@dataclass
+class TaxConfig:
+    india_stcg_rate: float = 0.20
+    india_ltcg_rate: float = 0.125
+    india_stcg_days: int = 365
+    us_stcg_days: int = 730
+    us_stcg_rate: float = 0.20
+    us_ltcg_rate: float = 0.125
+    enable_tax_lot_fifo: bool = False
 
 @dataclass
 class DataSourceConfig:
@@ -34,6 +45,8 @@ class PaperConfig:
     allow_partial_fills: bool = False
     allow_zero_delisting: bool = True
     gtc_expiration_trading_days: int = 5
+    quarantine_markdown_pct: float = 1.0
+    corporate_actions_file: str | None = None
 
 @dataclass
 class Config:
@@ -44,6 +57,7 @@ class Config:
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     data_sources: DataSourceConfig = field(default_factory=DataSourceConfig)
     paper: PaperConfig = field(default_factory=PaperConfig)
+    tax: TaxConfig = field(default_factory=TaxConfig)
     def __post_init__(self):
         if not 0 < self.execution.max_volume_participation <= 1:
             raise ValueError('max_volume_participation must be in (0, 1]')
@@ -60,6 +74,8 @@ class Config:
             raise ValueError(f"gtc_expiration_trading_days must be positive, got {self.paper.gtc_expiration_trading_days}")
         if self.paper.order_expiration_days <= 0:
             raise ValueError(f"order_expiration_days must be positive, got {self.paper.order_expiration_days}")
+        if not 0.0 <= self.paper.quarantine_markdown_pct <= 1.0:
+            raise ValueError("quarantine_markdown_pct must be between 0.0 and 1.0")
 
 def load_config(path: str = "config.yml") -> Config:
     p = Path(path)
@@ -72,4 +88,5 @@ def load_config(path: str = "config.yml") -> Config:
         "execution": ExecutionConfig(**raw.get("execution", {})),
         "data_sources": DataSourceConfig(**raw.get("data_sources", {})),
         "paper": PaperConfig(**raw.get("paper", {})),
+        "tax": TaxConfig(**raw.get("tax", {})),
     })

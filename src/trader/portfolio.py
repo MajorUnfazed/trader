@@ -4,6 +4,16 @@ import math
 
 
 @dataclass
+class TaxLot:
+    symbol: str
+    quantity: int
+    buy_date: date
+    cost_native: float
+    cost_inr: float
+    currency: str = "INR"
+
+
+@dataclass
 class Position:
     symbol: str
     quantity: int
@@ -11,6 +21,8 @@ class Position:
     avg_cost_inr: float
     currency: str
     sector: str = "Unknown"
+    is_quarantined: bool = False
+    tax_lots: list[TaxLot] = field(default_factory=list)
 
 
 @dataclass
@@ -55,6 +67,7 @@ class Portfolio:
     positions: dict[str, Position] = field(default_factory=dict)
     realised_pnl_inr: float = 0.0
     dividend_income_inr: float = 0.0
+    capital_loss_carryforward_inr: float = 0.0
     fills: list[Fill] = field(default_factory=list)
     last_prices: dict[str, float] = field(default_factory=dict)
     dividend_receivables: list[DividendReceivable] = field(default_factory=list)
@@ -68,6 +81,7 @@ class Portfolio:
     def value(self, quotes: dict[str, float], currencies: dict[str, str], usd_inr: float) -> float:
         self.mark(quotes)
         holdings = sum(
+            0.0 if p.is_quarantined else
             p.quantity * self.last_prices.get(s, p.avg_cost_native)
             * self.fx(currencies.get(s, p.currency), usd_inr)
             for s, p in self.positions.items()
@@ -84,8 +98,6 @@ class Portfolio:
         cost_rate = (cfg.us_cost_bps if currency.upper() == "USD" else cfg.india_cost_bps) / 10000
         qty = math.floor(budget_inr / (px * fx * (1 + cost_rate)))
         if volume is not None:
-            # All-or-none liquidity gate: never assume a fill larger than the
-            # configured fraction of that session's reported volume.
             max_qty = math.floor(max(0.0, float(volume)) * cfg.max_volume_participation)
             if max_qty < 1 or qty > max_qty:
                 return None
@@ -95,19 +107,23 @@ class Portfolio:
         fee = gross * cost_rate
         if gross + fee > self.cash_inr + 1e-8:
             return None
+        cost_per_inr = (gross + fee) / qty
+        when_d = when if isinstance(when, date) else date.fromisoformat(str(when))
+        new_lot = TaxLot(symbol, qty, when_d, px, cost_per_inr, currency)
         old = self.positions.get(symbol)
         if old:
             old.avg_cost_native = (old.avg_cost_native * old.quantity + px * qty) / (old.quantity + qty)
             old.avg_cost_inr = (old.avg_cost_inr * old.quantity + gross + fee) / (old.quantity + qty)
             old.quantity += qty
+            old.tax_lots.append(new_lot)
         else:
-            self.positions[symbol] = Position(symbol, qty, px, (gross + fee) / qty, currency, sector)
+            self.positions[symbol] = Position(symbol, qty, px, cost_per_inr, currency, sector, tax_lots=[new_lot])
         self.cash_inr -= gross + fee
         fill = Fill(symbol, "BUY", qty, px, fee, when, reason)
         self.fills.append(fill)
         return fill
 
-    def sell(self, symbol, price, cfg, when, reason, quantity=None, usd_inr=None, volume=None) -> Fill | None:
+    def sell(self, symbol, price, cfg, when, reason, quantity=None, usd_inr=None, volume=None, tax_cfg=None) -> Fill | None:
         p = self.positions.get(symbol)
         if not p:
             return None
@@ -125,10 +141,64 @@ class Portfolio:
         rate = (cfg.us_cost_bps if p.currency.upper() == "USD" else cfg.india_cost_bps) / 10000
         gross = qty * px * fx
         fee = gross * rate
-        gain = gross - (p.avg_cost_inr * qty)
-        # Deliberately simplified placeholder tax; jurisdiction/holding-period
-        # treatment is documented as a limitation in the project README.
-        tax = max(0, gain) * cfg.india_capital_gains_tax_rate
+        when_d = when if isinstance(when, date) else date.fromisoformat(str(when))
+
+        if tax_cfg and getattr(tax_cfg, "enable_tax_lot_fifo", False) and p.tax_lots:
+            gain = 0.0
+            tax = 0.0
+            remaining_to_sell = qty
+            while remaining_to_sell > 0 and p.tax_lots:
+                lot = p.tax_lots[0]
+                take_qty = min(remaining_to_sell, lot.quantity)
+                lot_cost = lot.cost_inr * take_qty
+                lot_gross = take_qty * px * fx
+                lot_fee = (take_qty / qty) * fee
+                lot_gain = lot_gross - lot_cost - lot_fee
+                gain += lot_gain
+
+                holding_days = (when_d - lot.buy_date).days if isinstance(lot.buy_date, date) else 0
+                if p.currency.upper() == "USD":
+                    is_stcg = holding_days < tax_cfg.us_stcg_days
+                    tax_rate = tax_cfg.us_stcg_rate if is_stcg else tax_cfg.us_ltcg_rate
+                else:
+                    is_stcg = holding_days < tax_cfg.india_stcg_days
+                    tax_rate = tax_cfg.india_stcg_rate if is_stcg else tax_cfg.india_ltcg_rate
+
+                if lot_gain < 0:
+                    self.capital_loss_carryforward_inr += abs(lot_gain)
+                else:
+                    taxable_gain = lot_gain
+                    if self.capital_loss_carryforward_inr > 0:
+                        offset = min(taxable_gain, self.capital_loss_carryforward_inr)
+                        taxable_gain -= offset
+                        self.capital_loss_carryforward_inr -= offset
+                    tax += taxable_gain * tax_rate
+
+                if take_qty == lot.quantity:
+                    p.tax_lots.pop(0)
+                else:
+                    lot.quantity -= take_qty
+                remaining_to_sell -= take_qty
+
+            if remaining_to_sell > 0:
+                extra_cost = p.avg_cost_inr * remaining_to_sell
+                extra_gain = (remaining_to_sell * px * fx) - extra_cost
+                gain += extra_gain
+                tax += max(0.0, extra_gain) * cfg.india_capital_gains_tax_rate
+        else:
+            # Drain FIFO lots alongside to keep lot quantities aligned
+            rem = qty
+            while rem > 0 and p.tax_lots:
+                lot = p.tax_lots[0]
+                take = min(rem, lot.quantity)
+                if take == lot.quantity:
+                    p.tax_lots.pop(0)
+                else:
+                    lot.quantity -= take
+                rem -= take
+            gain = gross - (p.avg_cost_inr * qty)
+            tax = max(0.0, gain) * cfg.india_capital_gains_tax_rate
+
         self.cash_inr += gross - fee - tax
         self.realised_pnl_inr += gain - fee - tax
         p.quantity -= qty
@@ -176,5 +246,48 @@ class Portfolio:
                 raise ValueError(f"Non-integral split quantity for {symbol}")
             p.quantity = int(new_quantity)
             p.avg_cost_native /= factor
+            p.avg_cost_inr /= factor
+            for lot in p.tax_lots:
+                lot.quantity = int(lot.quantity * factor)
+                lot.cost_native /= factor
+                lot.cost_inr /= factor
             if symbol in self.last_prices:
                 self.last_prices[symbol] /= factor
+
+    def apply_merger(self, target_symbol: str, acquirer_symbol: str, ratio: float, when: date, acquirer_currency: str = "INR", acquirer_sector: str = "Unknown") -> None:
+        """Convert target shares to acquirer shares according to exchange ratio, transferring cost basis."""
+        p = self.positions.get(target_symbol)
+        if not p:
+            return
+        if ratio <= 0:
+            raise ValueError("merger exchange ratio must be positive")
+        new_qty = math.floor(p.quantity * ratio)
+        if new_qty <= 0:
+            del self.positions[target_symbol]
+            return
+        total_cost_inr = p.avg_cost_inr * p.quantity
+        new_avg_cost_inr = total_cost_inr / new_qty
+        new_avg_cost_native = (p.avg_cost_native * p.quantity) / (ratio * new_qty) if ratio > 0 else 0.0
+
+        new_lots = []
+        for lot in p.tax_lots:
+            lot_new_qty = math.floor(lot.quantity * ratio)
+            if lot_new_qty > 0:
+                new_lots.append(TaxLot(
+                    acquirer_symbol, lot_new_qty, lot.buy_date,
+                    lot.cost_native / ratio if ratio > 0 else 0.0,
+                    lot.cost_inr / ratio if ratio > 0 else 0.0,
+                    acquirer_currency
+                ))
+        del self.positions[target_symbol]
+        if acquirer_symbol in self.positions:
+            existing = self.positions[acquirer_symbol]
+            existing_cost = existing.avg_cost_inr * existing.quantity
+            existing.quantity += new_qty
+            existing.avg_cost_inr = (existing_cost + total_cost_inr) / existing.quantity
+            existing.tax_lots.extend(new_lots)
+        else:
+            self.positions[acquirer_symbol] = Position(
+                acquirer_symbol, new_qty, new_avg_cost_native, new_avg_cost_inr,
+                acquirer_currency, acquirer_sector, tax_lots=new_lots
+            )

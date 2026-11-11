@@ -3,7 +3,7 @@ import uuid
 from pathlib import Path
 from datetime import date
 from contextlib import contextmanager
-from .portfolio import Portfolio, Position, DividendReceivable
+from .portfolio import Portfolio, Position, DividendReceivable, TaxLot
 
 ORDER_STATUS_PENDING = "PENDING"
 ORDER_STATUS_FILLED = "FILLED"
@@ -108,7 +108,18 @@ CREATE TABLE IF NOT EXISTS positions (
     avg_cost_inr REAL NOT NULL,
     currency TEXT NOT NULL,
     sector TEXT NOT NULL,
-    last_price_native REAL
+    last_price_native REAL,
+    is_quarantined INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS tax_lots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    buy_date TEXT NOT NULL,
+    cost_native REAL NOT NULL,
+    cost_inr REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'INR',
+    FOREIGN KEY(symbol) REFERENCES positions(symbol) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS dividend_receivables (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +145,7 @@ CREATE INDEX IF NOT EXISTS idx_fills_symbol_date ON fills(symbol, date);
 CREATE INDEX IF NOT EXISTS idx_dividends_status_paydate ON dividend_receivables(status, payment_date);
 CREATE INDEX IF NOT EXISTS idx_snapshots_date ON snapshots(date);
 CREATE INDEX IF NOT EXISTS idx_paper_sessions_date ON paper_sessions(session_date);
+CREATE INDEX IF NOT EXISTS idx_tax_lots_symbol ON tax_lots(symbol);
 '''
 
 
@@ -144,7 +156,7 @@ def migrate_db(connection: sqlite3.Connection) -> None:
 
     if not tables:
         connection.executescript(SCHEMA)
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute("PRAGMA user_version = 3")
         connection.commit()
         return
 
@@ -390,6 +402,28 @@ def migrate_db(connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys = ON;")
         connection.commit()
 
+    if current_version < 3:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "positions" in tables:
+            pos_cols = {row[1] for row in connection.execute("PRAGMA table_info(positions)")}
+            if "is_quarantined" not in pos_cols:
+                connection.execute("ALTER TABLE positions ADD COLUMN is_quarantined INTEGER NOT NULL DEFAULT 0")
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS tax_lots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                buy_date TEXT NOT NULL,
+                cost_native REAL NOT NULL,
+                cost_inr REAL NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'INR',
+                FOREIGN KEY(symbol) REFERENCES positions(symbol) ON DELETE CASCADE
+            )
+        """)
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_tax_lots_symbol ON tax_lots(symbol)")
+        connection.execute("PRAGMA user_version = 3")
+        connection.commit()
+
     connection.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_orders_symbol_status ON orders(symbol, status);")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_fills_order_id ON fills(order_id);")
@@ -397,6 +431,7 @@ def migrate_db(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE INDEX IF NOT EXISTS idx_dividends_status_paydate ON dividend_receivables(status, payment_date);")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_date ON snapshots(date);")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_paper_sessions_date ON paper_sessions(session_date);")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_tax_lots_symbol ON tax_lots(symbol);")
     connection.commit()
 
 
@@ -498,12 +533,24 @@ def load_portfolio(connection: sqlite3.Connection, initial_capital: float) -> tu
     if row is None:
         return Portfolio(initial_capital), None
     p = Portfolio(row[1], realised_pnl_inr=row[2], dividend_income_inr=row[3])
-    for symbol, qty, avg_native, avg_inr, currency, sector, last_price in connection.execute(
-        "SELECT symbol,quantity,avg_cost_native,avg_cost_inr,currency,sector,last_price_native FROM positions"
-    ):
-        p.positions[symbol] = Position(symbol, qty, avg_native, avg_inr, currency, sector)
+    pos_cols = {r[1] for r in connection.execute("PRAGMA table_info(positions)")}
+    has_quarantine = "is_quarantined" in pos_cols
+    query = "SELECT symbol,quantity,avg_cost_native,avg_cost_inr,currency,sector,last_price_native,is_quarantined FROM positions" if has_quarantine else "SELECT symbol,quantity,avg_cost_native,avg_cost_inr,currency,sector,last_price_native,0 FROM positions"
+    for symbol, qty, avg_native, avg_inr, currency, sector, last_price, is_q in connection.execute(query):
+        p.positions[symbol] = Position(symbol, qty, avg_native, avg_inr, currency, sector, is_quarantined=bool(is_q))
         if last_price is not None:
             p.last_prices[symbol] = last_price
+
+    tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "tax_lots" in tables:
+        for sym, q, b_date, c_native, c_inr, cur in connection.execute(
+            "SELECT symbol, quantity, buy_date, cost_native, cost_inr, currency FROM tax_lots ORDER BY id ASC"
+        ):
+            if sym in p.positions:
+                p.positions[sym].tax_lots.append(
+                    TaxLot(sym, q, date.fromisoformat(b_date), c_native, c_inr, cur)
+                )
+
     for symbol, ex, payment, net, gross, tax, currency, net_native, gross_native, tax_native in connection.execute(
         "SELECT symbol,ex_date,payment_date,net_inr,gross_inr,tax_inr,currency,net_native,gross_native,tax_native "
         "FROM dividend_receivables WHERE status='PENDING'"
@@ -522,18 +569,37 @@ def save_portfolio(connection: sqlite3.Connection, portfolio: Portfolio, last_pr
         "INSERT OR REPLACE INTO portfolio_state VALUES(1,?,?,?,?)",
         (portfolio.cash_inr, portfolio.realised_pnl_inr, portfolio.dividend_income_inr, last_processed_date)
     )
-    for x in portfolio.positions.values():
-        connection.execute(
-            "INSERT OR REPLACE INTO positions(symbol, quantity, avg_cost_native, avg_cost_inr, currency, sector, last_price_native) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (x.symbol, x.quantity, x.avg_cost_native, x.avg_cost_inr, x.currency, x.sector, portfolio.last_prices.get(x.symbol))
-        )
+    pos_cols = {r[1] for r in connection.execute("PRAGMA table_info(positions)")}
+    if "is_quarantined" in pos_cols:
+        for x in portfolio.positions.values():
+            connection.execute(
+                "INSERT OR REPLACE INTO positions(symbol, quantity, avg_cost_native, avg_cost_inr, currency, sector, last_price_native, is_quarantined) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (x.symbol, x.quantity, x.avg_cost_native, x.avg_cost_inr, x.currency, x.sector, portfolio.last_prices.get(x.symbol), 1 if x.is_quarantined else 0)
+            )
+    else:
+        for x in portfolio.positions.values():
+            connection.execute(
+                "INSERT OR REPLACE INTO positions(symbol, quantity, avg_cost_native, avg_cost_inr, currency, sector, last_price_native) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (x.symbol, x.quantity, x.avg_cost_native, x.avg_cost_inr, x.currency, x.sector, portfolio.last_prices.get(x.symbol))
+            )
     current_symbols = list(portfolio.positions.keys())
     if current_symbols:
         placeholders = ",".join("?" * len(current_symbols))
         connection.execute(f"DELETE FROM positions WHERE symbol NOT IN ({placeholders})", current_symbols)
     else:
         connection.execute("DELETE FROM positions")
+
+    tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "tax_lots" in tables:
+        connection.execute("DELETE FROM tax_lots")
+        for pos in portfolio.positions.values():
+            for lot in pos.tax_lots:
+                connection.execute(
+                    "INSERT INTO tax_lots(symbol, quantity, buy_date, cost_native, cost_inr, currency) VALUES(?,?,?,?,?,?)",
+                    (lot.symbol, lot.quantity, str(lot.buy_date), lot.cost_native, lot.cost_inr, lot.currency)
+                )
 
     for x in portfolio.dividend_receivables:
         connection.execute(

@@ -160,3 +160,22 @@ def read_universe_membership_csv(path: str | Path) -> pd.DataFrame:
 def read_fundamentals_csv(path: str | Path) -> pd.DataFrame:
     """Read fundamentals with an explicit, publication-time-aware schema."""
     return normalize_fundamentals(pd.read_csv(path))
+
+
+def read_corporate_actions_csv(path: str | Path) -> pd.DataFrame:
+    """Read structured corporate actions manifest.
+
+    Expected columns: date, symbol, action_type, ratio, cash_amount, target_symbol
+    action_type values: CASH_DELISTING, WORTHLESS_LIQUIDATION, STOCK_MERGER, SPIN_OFF
+    """
+    df = pd.read_csv(path, parse_dates=["date"])
+    required = {"date", "symbol", "action_type"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"{path}: missing corporate action columns {sorted(missing)}")
+    valid_actions = {"CASH_DELISTING", "WORTHLESS_LIQUIDATION", "STOCK_MERGER", "SPIN_OFF"}
+    invalid = set(df["action_type"].dropna().unique()) - valid_actions
+    if invalid:
+        raise ValueError(f"{path}: invalid action_type values: {sorted(invalid)}")
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    return df

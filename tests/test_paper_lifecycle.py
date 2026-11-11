@@ -422,9 +422,13 @@ def test_database_migration_from_legacy_schema(tmp_path):
 
     # Now open with hardened connect() which triggers migrate_db
     with open_db(db_path) as db:
-        # Check user_version is 2
+        # Check user_version is 3
         ver = db.execute("PRAGMA user_version").fetchone()[0]
-        assert ver == 2
+        assert ver == 3
+
+        # Verify tax_lots table was created
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "tax_lots" in tables
 
         # Verify legacy order preserved and has new defaults
         order = db.execute("SELECT symbol, status, order_type, time_in_force FROM orders WHERE symbol='LEGACY'").fetchone()
